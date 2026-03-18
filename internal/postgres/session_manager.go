@@ -8,6 +8,7 @@ import (
 
 	"dbx/internal/domain"
 	"dbx/internal/driver"
+	"github.com/jackc/pgx/v5"
 )
 
 type SessionManager struct {
@@ -20,6 +21,7 @@ type SessionManager struct {
 type sessionHandle struct {
 	info driver.SessionInfo
 	sm   *SessionManager
+	conn *pgx.Conn
 }
 
 func NewSessionManager(profile domain.ConnProfile) *SessionManager {
@@ -27,12 +29,30 @@ func NewSessionManager(profile domain.ConnProfile) *SessionManager {
 }
 
 func (sm *SessionManager) AcquireDedicatedSession(ctx context.Context, database string) (driver.SessionHandle, error) {
-	_ = ctx
-
 	next := atomic.AddUint64(&sm.counter, 1)
 	sessionID := domain.SessionID(fmt.Sprintf("sess_%d", next))
 
-	h := &sessionHandle{info: driver.SessionInfo{ID: sessionID, ProfileID: sm.profile.ID, Database: database, BackendPID: 0}, sm: sm}
+	cfg, err := buildConnConfig(sm.profile, database)
+	if err != nil {
+		return nil, err
+	}
+
+	conn, err := pgx.ConnectConfig(ctx, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("open dedicated postgres session: %w", err)
+	}
+
+	var backendPID int
+	if err := conn.QueryRow(ctx, "select pg_backend_pid()").Scan(&backendPID); err != nil {
+		_ = conn.Close(ctx)
+		return nil, fmt.Errorf("fetch backend pid: %w", err)
+	}
+
+	h := &sessionHandle{
+		info: driver.SessionInfo{ID: sessionID, ProfileID: sm.profile.ID, Database: cfg.Database, BackendPID: backendPID},
+		sm:   sm,
+		conn: conn,
+	}
 
 	sm.mu.Lock()
 	sm.sessions[sessionID] = h
@@ -42,11 +62,18 @@ func (sm *SessionManager) AcquireDedicatedSession(ctx context.Context, database 
 }
 
 func (sm *SessionManager) ReleaseDedicatedSession(ctx context.Context, sessionID domain.SessionID) error {
-	_ = ctx
 	sm.mu.Lock()
-	delete(sm.sessions, sessionID)
+	h, ok := sm.sessions[sessionID]
+	if ok {
+		delete(sm.sessions, sessionID)
+	}
 	sm.mu.Unlock()
-	return nil
+
+	if !ok {
+		return nil
+	}
+
+	return h.conn.Close(ctx)
 }
 
 func (h *sessionHandle) Info() driver.SessionInfo {

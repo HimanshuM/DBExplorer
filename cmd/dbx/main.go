@@ -11,6 +11,8 @@ import (
 	"dbx/internal/service"
 )
 
+const demoSQL = "select 1 as one, 'hello' as greeting"
+
 func main() {
 	registry := driver.NewRegistry()
 	if err := registry.Register(postgres.NewFactory()); err != nil {
@@ -27,6 +29,9 @@ func main() {
 			User:     "postgres",
 			Database: "postgres",
 			SSLMode:  "disable",
+			Options: map[string]string{
+				"password": "<CHANGE_ME>",
+			},
 		},
 	}
 
@@ -44,18 +49,43 @@ func main() {
 	runResp, err := queryAPI.RunQuery(domain.RunQueryRequest{
 		ProfileID: domain.ConnProfileID("local_pg"),
 		Database:  "postgres",
-		SQL:       "select 'hello from stub'",
+		SQL:       demoSQL,
 		Mode:      domain.RunStatement,
 		ReadOnly:  true,
 	})
 	if err != nil {
-		log.Fatalf("failed to run stub query: %v", err)
+		log.Fatalf("failed to run query: %v\nTip: update local example password in cmd/dbx/main.go (Options[\"password\"]).", err)
 	}
 
 	job, err := queryAPI.GetJob(domain.ConnProfileID("local_pg"), runResp.JobID)
 	if err != nil {
-		log.Fatalf("failed to get stub job: %v", err)
+		log.Fatalf("failed to get job: %v", err)
 	}
 
-	fmt.Printf("dbx backend skeleton started: profiles=%d, lastJob=%s, status=%s\n", len(listedProfiles), job.JobID, job.Status)
+	schema, err := queryAPI.GetResultSchema(domain.ConnProfileID("local_pg"), domain.GetResultSchemaRequest{
+		JobID:       runResp.JobID,
+		ResultSetID: domain.ResultSetID("rs_1"),
+	})
+	if err != nil {
+		log.Fatalf("failed to get result schema: %v", err)
+	}
+
+	rows, err := queryAPI.GetRows(domain.ConnProfileID("local_pg"), domain.GetRowsRequest{
+		JobID:       runResp.JobID,
+		ResultSetID: domain.ResultSetID("rs_1"),
+		Start:       0,
+		Count:       10,
+	})
+	if err != nil {
+		log.Fatalf("failed to get rows: %v", err)
+	}
+
+	fmt.Printf(
+		"dbx backend started: profiles=%d, job=%s, status=%s, columns=%d, rows=%d\n",
+		len(listedProfiles),
+		job.JobID,
+		job.Status,
+		len(schema.Columns),
+		len(rows.Rows),
+	)
 }

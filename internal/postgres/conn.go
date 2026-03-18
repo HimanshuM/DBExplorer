@@ -1,8 +1,11 @@
 package postgres
 
 import (
+	"fmt"
+
 	"dbx/internal/domain"
 	"dbx/internal/driver"
+	"github.com/jackc/pgx/v5"
 )
 
 type Conn struct {
@@ -35,4 +38,36 @@ func (c *Conn) SessionManager() driver.SessionManager {
 
 func (c *Conn) QueryRunner() driver.QueryRunner {
 	return c.queryRunner
+}
+
+func buildConnConfig(profile domain.ConnProfile, database string) (*pgx.ConnConfig, error) {
+	targetDB := profile.Database
+	if database != "" {
+		targetDB = database
+	}
+
+	if targetDB == "" {
+		return nil, fmt.Errorf("database cannot be empty")
+	}
+
+	connString := fmt.Sprintf(
+		"host=%s port=%d user=%s dbname=%s sslmode=%s",
+		profile.Host,
+		profile.Port,
+		profile.User,
+		targetDB,
+		profile.SSLMode,
+	)
+
+	cfg, err := pgx.ParseConfig(connString)
+	if err != nil {
+		return nil, fmt.Errorf("parse postgres connection config: %w", err)
+	}
+
+	if password := profile.Options["password"]; password != "" {
+		cfg.Password = password
+	}
+
+	// TODO: Password should come from secret storage/keyring, not profile options.
+	return cfg, nil
 }
