@@ -34,6 +34,7 @@ func main() {
 
 	connectionService := service.NewConnectionService(registry, profiles)
 	queryService := service.NewQueryService(registry, profiles)
+
 	connectionAPI := api.NewConnectionAPI(connectionService)
 	queryAPI := api.NewQueryAPI(queryService)
 
