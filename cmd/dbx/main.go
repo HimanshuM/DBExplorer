@@ -29,6 +29,9 @@ func main() {
 			User:     "postgres",
 			Database: "postgres",
 			SSLMode:  "disable",
+			Options: map[string]string{
+				"password": "<CHANGE_ME>",
+			},
 		},
 	}
 
@@ -51,7 +54,7 @@ func main() {
 		ReadOnly:  true,
 	})
 	if err != nil {
-		log.Fatalf("failed to run query: %v", err)
+		log.Fatalf("failed to run query: %v\nTip: update local example password in cmd/dbx/main.go (Options[\"password\"]).", err)
 	}
 
 	job, err := queryAPI.GetJob(domain.ConnProfileID("local_pg"), runResp.JobID)

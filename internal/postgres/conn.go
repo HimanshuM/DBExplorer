@@ -64,6 +64,10 @@ func buildConnConfig(profile domain.ConnProfile, database string) (*pgx.ConnConf
 		return nil, fmt.Errorf("parse postgres connection config: %w", err)
 	}
 
-	// TODO: Add password/keyring support.
+	if password := profile.Options["password"]; password != "" {
+		cfg.Password = password
+	}
+
+	// TODO: Password should come from secret storage/keyring, not profile options.
 	return cfg, nil
 }
