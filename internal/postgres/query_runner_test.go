@@ -3,6 +3,9 @@ package postgres
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -405,5 +408,190 @@ func TestJobSnapshotAndHelpers(t *testing.T) {
 	handle := &jobHandle{id: "job_2", sessionID: "sess_2", backendPID: 99}
 	if handle.ID() != "job_2" || handle.SessionID() != "sess_2" || handle.BackendPID() != 99 {
 		t.Fatalf("unexpected job handle values: id=%q session=%q pid=%d", handle.ID(), handle.SessionID(), handle.BackendPID())
+	}
+}
+
+func TestDisposeJobConcurrentCallsOnTerminalJob(t *testing.T) {
+	qr := &QueryRunner{registry: NewJobRegistry()}
+	job := &Job{
+		id:     "job_concurrent_dispose",
+		status: domain.JobSucceeded,
+		done:   make(chan struct{}),
+	}
+	qr.registry.Put(job)
+
+	const callers = 16
+	errCh := make(chan error, callers)
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+
+	for range callers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			errCh <- qr.DisposeJob(context.Background(), job.id)
+		}()
+	}
+
+	close(start)
+	wg.Wait()
+	close(errCh)
+
+	for err := range errCh {
+		if err != nil {
+			t.Fatalf("expected concurrent DisposeJob calls to succeed, got %v", err)
+		}
+	}
+
+	if _, ok := qr.registry.Get(job.id); ok {
+		t.Fatal("expected terminal job to be removed after concurrent dispose calls")
+	}
+}
+
+func TestDisposeJobWhileJobTransitionsToTerminal(t *testing.T) {
+	qr := &QueryRunner{registry: NewJobRegistry()}
+	job := &Job{
+		id:     "job_transition",
+		status: domain.JobRunning,
+		done:   make(chan struct{}),
+	}
+	qr.registry.Put(job)
+
+	disposeResult := make(chan error, 1)
+	go func() {
+		disposeResult <- qr.DisposeJob(context.Background(), job.id)
+	}()
+
+	select {
+	case err := <-disposeResult:
+		if err == nil {
+			t.Fatal("expected DisposeJob to reject a running job")
+		}
+		if !strings.Contains(err.Error(), "still running") {
+			t.Fatalf("expected running-job dispose error, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for initial DisposeJob attempt")
+	}
+
+	snapshot := qr.finishWithError(job, domain.JobFailed, &domain.JobError{Code: "query_error", Message: "boom"})
+	if snapshot.Status != domain.JobFailed {
+		t.Fatalf("expected failed snapshot after transition, got %q", snapshot.Status)
+	}
+
+	if err := qr.DisposeJob(context.Background(), job.id); err != nil {
+		t.Fatalf("expected DisposeJob to succeed after transition to terminal, got %v", err)
+	}
+	if _, ok := qr.registry.Get(job.id); ok {
+		t.Fatal("expected terminal job to be removed after dispose")
+	}
+}
+
+func TestGetRowsDuringDispose(t *testing.T) {
+	qr := &QueryRunner{registry: NewJobRegistry()}
+	job := &Job{
+		id:     "job_rows_during_dispose",
+		status: domain.JobSucceeded,
+		rows: [][]any{
+			{1, "a"},
+			{2, "b"},
+			{3, "c"},
+		},
+		done: make(chan struct{}),
+	}
+	qr.registry.Put(job)
+
+	const readers = 8
+	const readsPerReader = 50
+	errCh := make(chan error, readers*readsPerReader+1)
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+
+	for range readers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			for range readsPerReader {
+				resp, err := qr.GetRows(context.Background(), domain.GetRowsRequest{
+					JobID: job.id,
+					Start: 0,
+					Count: 2,
+				})
+				if err != nil {
+					if !strings.Contains(err.Error(), "not found") {
+						errCh <- fmt.Errorf("unexpected GetRows error: %w", err)
+					}
+					continue
+				}
+				if len(resp.Rows) > 0 {
+					resp.Rows[0][0] = 99
+				}
+			}
+		}()
+	}
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		<-start
+		errCh <- qr.DisposeJob(context.Background(), job.id)
+	}()
+
+	close(start)
+	wg.Wait()
+	close(errCh)
+
+	for err := range errCh {
+		if err != nil {
+			t.Fatalf("unexpected concurrent GetRows/DisposeJob result: %v", err)
+		}
+	}
+}
+
+func TestCancelAndDisposeRace(t *testing.T) {
+	qr := &QueryRunner{registry: NewJobRegistry()}
+	job := &Job{
+		id:         "job_cancel_dispose",
+		status:     domain.JobRunning,
+		backendPID: 1234,
+		done:       make(chan struct{}),
+	}
+	qr.registry.Put(job)
+
+	cancelErrCh := make(chan error, 1)
+	disposeErrCh := make(chan error, 1)
+
+	go func() {
+		cancelErrCh <- qr.CancelJob(context.Background(), job.id)
+	}()
+	go func() {
+		disposeErrCh <- qr.DisposeJob(context.Background(), job.id)
+	}()
+
+	cancelErr := <-cancelErrCh
+	disposeErr := <-disposeErrCh
+
+	if cancelErr != nil {
+		t.Fatalf("expected CancelJob to succeed during race, got %v", cancelErr)
+	}
+	if disposeErr == nil {
+		t.Fatal("expected DisposeJob to reject a running job during cancel/dispose race")
+	}
+	if !strings.Contains(disposeErr.Error(), "still running") {
+		t.Fatalf("expected running-job dispose error, got %v", disposeErr)
+	}
+
+	job.mu.RLock()
+	cancelRequested := job.cancelRequested
+	job.mu.RUnlock()
+	if !cancelRequested {
+		t.Fatal("expected CancelJob to mark the job as cancel requested")
+	}
+
+	qr.finishWithError(job, domain.JobCanceled, &domain.JobError{Code: "query_canceled", Message: "canceled"})
+	if err := qr.DisposeJob(context.Background(), job.id); err != nil {
+		t.Fatalf("expected DisposeJob to succeed once the job is terminal, got %v", err)
 	}
 }
