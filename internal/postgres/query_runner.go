@@ -68,6 +68,7 @@ type Job struct {
 	jobErr          *domain.JobError
 	cancelRequested bool
 	cancelStarted   bool
+	sessionReleased bool
 	disposed        bool
 
 	schema domain.ResultSchema
@@ -158,6 +159,11 @@ func (qr *QueryRunner) RunQuery(ctx context.Context, req domain.RunQueryRequest)
 }
 
 func (qr *QueryRunner) runJob(ctx context.Context, job *Job, session *sessionHandle) {
+	defer func() {
+		qr.releaseJobSession(context.Background(), job)
+		closeJobDone(job)
+	}()
+
 	startedSnapshot := qr.markJobRunning(job)
 	qr.emitter.EmitStarted(ctx, startedSnapshot)
 
@@ -177,11 +183,9 @@ func (qr *QueryRunner) runJob(ctx context.Context, job *Job, session *sessionHan
 
 			qr.emitter.EmitResultSet(ctx, jobSummary, schema)
 			qr.emitter.EmitCompleted(ctx, jobSummary)
-			closeJobDone(job)
 			return
 		}
 		job.mu.Unlock()
-		closeJobDone(job)
 		return
 	}
 
@@ -194,7 +198,6 @@ func (qr *QueryRunner) runJob(ctx context.Context, job *Job, session *sessionHan
 	default:
 		qr.emitter.EmitFailed(ctx, terminal)
 	}
-	closeJobDone(job)
 }
 
 func (qr *QueryRunner) executeSingleResultQuery(ctx context.Context, session *sessionHandle, sql string) (domain.ResultSchema, [][]any, domain.ResultSetSummary, error) {
@@ -318,6 +321,8 @@ func (qr *QueryRunner) CancelJob(ctx context.Context, jobID domain.JobID) error 
 }
 
 func (qr *QueryRunner) sendCancel(ctx context.Context, jobID domain.JobID, database string, backendPID int) {
+	defer qr.resetCancelStarted(jobID)
+
 	cfg, err := buildConnConfig(qr.profile, database)
 	if err != nil {
 		return
@@ -335,14 +340,6 @@ func (qr *QueryRunner) sendCancel(ctx context.Context, jobID domain.JobID, datab
 	}
 	if !canceled {
 		return
-	}
-
-	// State is not forced here; terminal status is resolved by the runner based on
-	// the actual execution error so cancellation races don't clobber natural completion.
-	if job, ok := qr.registry.Get(jobID); ok {
-		job.mu.Lock()
-		job.cancelStarted = false
-		job.mu.Unlock()
 	}
 }
 
@@ -378,6 +375,7 @@ func (qr *QueryRunner) GetRows(ctx context.Context, req domain.GetRowsRequest) (
 	}
 
 	job.mu.RLock()
+	status := job.status
 	total := len(job.rows)
 	start := req.Start
 	if start < 0 {
@@ -405,13 +403,17 @@ func (qr *QueryRunner) GetRows(ctx context.Context, req domain.GetRowsRequest) (
 	}
 	job.mu.RUnlock()
 
+	if !isTerminal(status) {
+		return domain.GetRowsResponse{Start: start, Rows: paged, RowCountKnown: false}, nil
+	}
+
 	return domain.GetRowsResponse{Start: start, Rows: paged, RowCountKnown: true, RowCount: int64(total)}, nil
 }
 
 func (qr *QueryRunner) DisposeJob(ctx context.Context, jobID domain.JobID) error {
 	_ = ctx
 
-	job, ok := qr.registry.Delete(jobID)
+	job, ok := qr.registry.Get(jobID)
 	if !ok {
 		return nil
 	}
@@ -421,11 +423,46 @@ func (qr *QueryRunner) DisposeJob(ctx context.Context, jobID domain.JobID) error
 		job.mu.Unlock()
 		return nil
 	}
+	if !isTerminal(job.status) {
+		status := job.status
+		job.mu.Unlock()
+		return fmt.Errorf("job %q is still %s", jobID, status)
+	}
 	job.disposed = true
+	job.mu.Unlock()
+
+	qr.registry.Delete(jobID)
+	return nil
+}
+
+func (qr *QueryRunner) releaseJobSession(ctx context.Context, job *Job) {
+	job.mu.Lock()
+	if job.sessionReleased {
+		job.mu.Unlock()
+		return
+	}
+	job.sessionReleased = true
 	sessionID := job.sessionID
 	job.mu.Unlock()
 
-	return qr.sessionManager.ReleaseDedicatedSession(context.Background(), sessionID)
+	if qr.sessionManager == nil {
+		return
+	}
+
+	_ = qr.sessionManager.ReleaseDedicatedSession(ctx, sessionID)
+}
+
+func (qr *QueryRunner) resetCancelStarted(jobID domain.JobID) {
+	// State is not forced here; terminal status is resolved by the runner based on
+	// the actual execution error so cancellation races don't clobber natural completion.
+	job, ok := qr.registry.Get(jobID)
+	if !ok {
+		return
+	}
+
+	job.mu.Lock()
+	job.cancelStarted = false
+	job.mu.Unlock()
 }
 
 func (j *Job) snapshot() domain.JobSummary {
