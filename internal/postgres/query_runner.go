@@ -71,8 +71,9 @@ type Job struct {
 	sessionReleased bool
 	disposed        bool
 
-	schema domain.ResultSchema
-	rows   [][]any
+	schema     domain.ResultSchema
+	rows       [][]any
+	resultSets []domain.ResultSetSummary
 
 	done chan struct{}
 }
@@ -146,6 +147,7 @@ func (qr *QueryRunner) RunQuery(ctx context.Context, req domain.RunQueryRequest)
 		createdAt:  now,
 		schema:     domain.ResultSchema{Columns: []domain.ColumnDef{}},
 		rows:       make([][]any, 0),
+		resultSets: make([]domain.ResultSetSummary, 0),
 		done:       make(chan struct{}),
 	}
 
@@ -173,12 +175,12 @@ func (qr *QueryRunner) runJob(ctx context.Context, job *Job, session *sessionHan
 		if !isTerminal(job.status) {
 			job.schema = schema
 			job.rows = rows
+			job.resultSets = []domain.ResultSetSummary{resultSummary}
 			job.status = domain.JobSucceeded
 			job.startedAt = startedSnapshot.StartedAt
 			job.endedAt = time.Now().UnixMilli()
 			job.jobErr = nil
 			jobSummary := job.snapshotLocked()
-			jobSummary.ResultSets = []domain.ResultSetSummary{resultSummary}
 			job.mu.Unlock()
 
 			qr.emitter.EmitResultSet(ctx, jobSummary, schema)
@@ -216,9 +218,7 @@ func (qr *QueryRunner) executeSingleResultQuery(ctx context.Context, session *se
 		if err != nil {
 			return domain.ResultSchema{}, nil, domain.ResultSetSummary{}, fmt.Errorf("row decode: %w", err)
 		}
-		rowCopy := make([]any, len(vals))
-		copy(rowCopy, vals)
-		storedRows = append(storedRows, rowCopy)
+		storedRows = append(storedRows, cloneRow(vals))
 	}
 
 	if err := rows.Err(); err != nil {
@@ -358,6 +358,9 @@ func (qr *QueryRunner) GetResultSchema(ctx context.Context, req domain.GetResult
 	if !ok {
 		return domain.ResultSchema{}, fmt.Errorf("job %q not found", req.JobID)
 	}
+	if !isDefaultResultSetID(req.ResultSetID) {
+		return domain.ResultSchema{}, fmt.Errorf("result set %q not found for job %q", req.ResultSetID, req.JobID)
+	}
 
 	job.mu.RLock()
 	schema := domain.ResultSchema{Columns: make([]domain.ColumnDef, len(job.schema.Columns))}
@@ -372,6 +375,9 @@ func (qr *QueryRunner) GetRows(ctx context.Context, req domain.GetRowsRequest) (
 	job, ok := qr.registry.Get(req.JobID)
 	if !ok {
 		return domain.GetRowsResponse{}, fmt.Errorf("job %q not found", req.JobID)
+	}
+	if !isDefaultResultSetID(req.ResultSetID) {
+		return domain.GetRowsResponse{}, fmt.Errorf("result set %q not found for job %q", req.ResultSetID, req.JobID)
 	}
 
 	job.mu.RLock()
@@ -397,9 +403,7 @@ func (qr *QueryRunner) GetRows(ctx context.Context, req domain.GetRowsRequest) (
 
 	paged := make([][]any, end-start)
 	for i := start; i < end; i++ {
-		rowCopy := make([]any, len(job.rows[i]))
-		copy(rowCopy, job.rows[i])
-		paged[i-start] = rowCopy
+		paged[i-start] = cloneRow(job.rows[i])
 	}
 	job.mu.RUnlock()
 
@@ -472,22 +476,7 @@ func (j *Job) snapshot() domain.JobSummary {
 }
 
 func (j *Job) snapshotLocked() domain.JobSummary {
-	resultSets := make([]domain.ResultSetSummary, 0)
-	if isTerminal(j.status) {
-		commandTag := "SELECT"
-		if len(j.schema.Columns) == 0 {
-			commandTag = ""
-		}
-		rowCount := int64(len(j.rows))
-		resultSets = []domain.ResultSetSummary{{
-			ResultSetID:    resultSetIDDefault,
-			StatementIndex: 0,
-			CommandTag:     commandTag,
-			RowsAffected:   rowCount,
-			RowCountKnown:  true,
-			RowCount:       rowCount,
-		}}
-	}
+	resultSets := cloneResultSetSummaries(j.resultSets)
 
 	var copiedErr *domain.JobError
 	if j.jobErr != nil {
@@ -571,4 +560,39 @@ func isQueryCanceledError(err error) bool {
 		return pgErr.Code == pgCodeQueryCanceled
 	}
 	return strings.Contains(strings.ToLower(err.Error()), "canceling statement due to user request")
+}
+
+func isDefaultResultSetID(resultSetID domain.ResultSetID) bool {
+	return resultSetID == "" || resultSetID == resultSetIDDefault
+}
+
+func cloneResultSetSummaries(resultSets []domain.ResultSetSummary) []domain.ResultSetSummary {
+	if len(resultSets) == 0 {
+		return []domain.ResultSetSummary{}
+	}
+	copied := make([]domain.ResultSetSummary, len(resultSets))
+	copy(copied, resultSets)
+	return copied
+}
+
+func cloneRow(row []any) []any {
+	copied := make([]any, len(row))
+	for i, value := range row {
+		copied[i] = cloneValue(value)
+	}
+	return copied
+}
+
+func cloneValue(value any) any {
+	switch v := value.(type) {
+	case []byte:
+		if v == nil {
+			return []byte(nil)
+		}
+		copied := make([]byte, len(v))
+		copy(copied, v)
+		return copied
+	default:
+		return value
+	}
 }

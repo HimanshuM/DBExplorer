@@ -154,6 +154,9 @@ func TestGetJobAndSchemaErrorsAndCopies(t *testing.T) {
 	if _, err := qr.GetResultSchema(context.Background(), domain.GetResultSchemaRequest{JobID: "missing"}); err == nil {
 		t.Fatal("expected missing schema job to fail")
 	}
+	if _, err := qr.GetResultSchema(context.Background(), domain.GetResultSchemaRequest{JobID: "missing", ResultSetID: "rs_missing"}); err == nil {
+		t.Fatal("expected missing result set to fail")
+	}
 
 	job := &Job{
 		id:     "job_1",
@@ -174,6 +177,10 @@ func TestGetJobAndSchemaErrorsAndCopies(t *testing.T) {
 	job.mu.RUnlock()
 	if originalName != "one" {
 		t.Fatalf("expected stored schema to remain unchanged, got %q", originalName)
+	}
+
+	if _, err := qr.GetResultSchema(context.Background(), domain.GetResultSchemaRequest{JobID: "job_1", ResultSetID: "rs_missing"}); err == nil {
+		t.Fatal("expected unknown result set to fail")
 	}
 }
 
@@ -211,11 +218,12 @@ func TestGetRowsReportsUnknownCountWhileJobRunning(t *testing.T) {
 
 func TestGetRowsAppliesPagingAndCopiesRowsForTerminalJobs(t *testing.T) {
 	qr := &QueryRunner{registry: NewJobRegistry()}
+	originalBytes := []byte{1, 2, 3}
 	job := &Job{
 		id:     "job_4",
 		status: domain.JobSucceeded,
 		rows: [][]any{
-			{1, "a"},
+			{1, originalBytes},
 			{2, "b"},
 			{3, "c"},
 		},
@@ -240,11 +248,16 @@ func TestGetRowsAppliesPagingAndCopiesRowsForTerminalJobs(t *testing.T) {
 	}
 
 	resp.Rows[0][0] = 99
+	resp.Rows[0][1].([]byte)[0] = 99
 	job.mu.RLock()
 	original := job.rows[0][0]
+	originalByte := job.rows[0][1].([]byte)[0]
 	job.mu.RUnlock()
 	if original != 1 {
 		t.Fatalf("expected stored rows to remain unchanged, got %v", original)
+	}
+	if originalByte != 1 {
+		t.Fatalf("expected stored byte slice to remain unchanged, got %v", originalByte)
 	}
 }
 
@@ -253,6 +266,12 @@ func TestGetRowsRejectsMissingJob(t *testing.T) {
 
 	if _, err := qr.GetRows(context.Background(), domain.GetRowsRequest{JobID: "missing"}); err == nil {
 		t.Fatal("expected missing job to fail")
+	}
+
+	job := &Job{id: "job_1", status: domain.JobSucceeded, done: make(chan struct{})}
+	qr.registry.Put(job)
+	if _, err := qr.GetRows(context.Background(), domain.GetRowsRequest{JobID: "job_1", ResultSetID: "rs_missing"}); err == nil {
+		t.Fatal("expected unknown result set to fail")
 	}
 }
 
@@ -371,15 +390,27 @@ func TestJobSnapshotAndHelpers(t *testing.T) {
 		status:    domain.JobSucceeded,
 		rows:      [][]any{{1}, {2}},
 		schema:    domain.ResultSchema{Columns: []domain.ColumnDef{{Name: "one"}}},
-		jobErr:    &domain.JobError{Code: "query_error", Message: "boom"},
+		resultSets: []domain.ResultSetSummary{{
+			ResultSetID:    resultSetIDDefault,
+			StatementIndex: 0,
+			CommandTag:     "SELECT 2",
+			RowsAffected:   2,
+			RowCountKnown:  true,
+			RowCount:       2,
+		}},
+		jobErr: &domain.JobError{Code: "query_error", Message: "boom"},
 	}
 
 	snapshot := job.snapshot()
 	if snapshot.JobID != "job_1" || snapshot.ProfileID != "profile_1" || snapshot.Database != "postgres" {
 		t.Fatalf("unexpected snapshot identity: %+v", snapshot)
 	}
-	if len(snapshot.ResultSets) != 1 || snapshot.ResultSets[0].CommandTag != "SELECT" || snapshot.ResultSets[0].RowCount != 2 {
+	if len(snapshot.ResultSets) != 1 || snapshot.ResultSets[0].CommandTag != "SELECT 2" || snapshot.ResultSets[0].RowsAffected != 2 || snapshot.ResultSets[0].RowCount != 2 {
 		t.Fatalf("unexpected result set snapshot: %+v", snapshot.ResultSets)
+	}
+	snapshot.ResultSets[0].CommandTag = "MUTATED"
+	if job.resultSets[0].CommandTag != "SELECT 2" {
+		t.Fatal("expected result set summary snapshot to be copied")
 	}
 
 	job.jobErr.Message = "changed"
