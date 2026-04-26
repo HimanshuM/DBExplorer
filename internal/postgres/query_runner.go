@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -14,21 +15,67 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
+const (
+	resultSetIDDefault  = domain.ResultSetID("rs_1")
+	pgCodeQueryCanceled = "57014"
+)
+
 type QueryRunner struct {
 	profile        domain.ConnProfile
 	sessionManager *SessionManager
 	jobCounter     uint64
-	mu             sync.RWMutex
-	jobs           map[domain.JobID]*jobState
+	registry       *JobRegistry
+	emitter        JobEventEmitter
 }
 
-type jobState struct {
+type JobEventEmitter interface {
+	EmitQueued(ctx context.Context, summary domain.JobSummary)
+	EmitStarted(ctx context.Context, summary domain.JobSummary)
+	EmitResultSet(ctx context.Context, summary domain.JobSummary, schema domain.ResultSchema)
+	EmitCompleted(ctx context.Context, summary domain.JobSummary)
+	EmitFailed(ctx context.Context, summary domain.JobSummary)
+	EmitCanceled(ctx context.Context, summary domain.JobSummary)
+}
+
+type noopJobEventEmitter struct{}
+
+func (noopJobEventEmitter) EmitQueued(context.Context, domain.JobSummary)                         {}
+func (noopJobEventEmitter) EmitStarted(context.Context, domain.JobSummary)                        {}
+func (noopJobEventEmitter) EmitResultSet(context.Context, domain.JobSummary, domain.ResultSchema) {}
+func (noopJobEventEmitter) EmitCompleted(context.Context, domain.JobSummary)                      {}
+func (noopJobEventEmitter) EmitFailed(context.Context, domain.JobSummary)                         {}
+func (noopJobEventEmitter) EmitCanceled(context.Context, domain.JobSummary)                       {}
+
+type JobRegistry struct {
+	mu   sync.RWMutex
+	jobs map[domain.JobID]*Job
+}
+
+type Job struct {
 	id         domain.JobID
 	sessionID  domain.SessionID
 	backendPID int
-	summary    domain.JobSummary
+	profileID  domain.ConnProfileID
+	database   string
+	request    domain.RunQueryRequest
+
+	mu sync.RWMutex
+
+	status          domain.JobStatus
+	createdAt       int64
+	startedAt       int64
+	endedAt         int64
+	jobErr          *domain.JobError
+	cancelRequested bool
+	cancelStarted   bool
+	sessionReleased bool
+	disposed        bool
+
 	schema     domain.ResultSchema
 	rows       [][]any
+	resultSets []domain.ResultSetSummary
+
+	done chan struct{}
 }
 
 type jobHandle struct {
@@ -38,7 +85,39 @@ type jobHandle struct {
 }
 
 func NewQueryRunner(profile domain.ConnProfile, sm *SessionManager) *QueryRunner {
-	return &QueryRunner{profile: profile, sessionManager: sm, jobs: make(map[domain.JobID]*jobState)}
+	return &QueryRunner{
+		profile:        profile,
+		sessionManager: sm,
+		registry:       NewJobRegistry(),
+		emitter:        noopJobEventEmitter{},
+	}
+}
+
+func NewJobRegistry() *JobRegistry {
+	return &JobRegistry{jobs: make(map[domain.JobID]*Job)}
+}
+
+func (r *JobRegistry) Put(job *Job) {
+	r.mu.Lock()
+	r.jobs[job.id] = job
+	r.mu.Unlock()
+}
+
+func (r *JobRegistry) Get(jobID domain.JobID) (*Job, bool) {
+	r.mu.RLock()
+	job, ok := r.jobs[jobID]
+	r.mu.RUnlock()
+	return job, ok
+}
+
+func (r *JobRegistry) Delete(jobID domain.JobID) (*Job, bool) {
+	r.mu.Lock()
+	job, ok := r.jobs[jobID]
+	if ok {
+		delete(r.jobs, jobID)
+	}
+	r.mu.Unlock()
+	return job, ok
 }
 
 func (qr *QueryRunner) RunQuery(ctx context.Context, req domain.RunQueryRequest) (driver.JobHandle, error) {
@@ -49,192 +128,267 @@ func (qr *QueryRunner) RunQuery(ctx context.Context, req domain.RunQueryRequest)
 
 	h, ok := session.(*sessionHandle)
 	if !ok {
+		_ = session.Close()
 		return nil, fmt.Errorf("internal session type assertion failed")
 	}
 
 	next := atomic.AddUint64(&qr.jobCounter, 1)
 	jobID := domain.JobID(fmt.Sprintf("job_%d", next))
-	started := time.Now().UnixMilli()
 
-	summary := domain.JobSummary{
-		JobID:      jobID,
-		ProfileID:  req.ProfileID,
-		Database:   h.info.Database,
-		Status:     domain.JobRunning,
-		StartedAt:  started,
-		ResultSets: []domain.ResultSetSummary{},
+	now := time.Now().UnixMilli()
+	job := &Job{
+		id:         jobID,
+		sessionID:  h.info.ID,
+		backendPID: h.info.BackendPID,
+		profileID:  req.ProfileID,
+		database:   h.info.Database,
+		request:    req,
+		status:     domain.JobQueued,
+		createdAt:  now,
+		schema:     domain.ResultSchema{Columns: []domain.ColumnDef{}},
+		rows:       make([][]any, 0),
+		resultSets: make([]domain.ResultSetSummary, 0),
+		done:       make(chan struct{}),
 	}
 
-	state := &jobState{id: jobID, sessionID: h.info.ID, backendPID: h.info.BackendPID, summary: summary}
+	qr.registry.Put(job)
+	queued := job.snapshot()
+	qr.emitter.EmitQueued(ctx, queued)
 
-	rows, err := h.conn.Query(ctx, req.SQL)
-	if err != nil {
-		state.summary.Status = domain.JobFailed
-		state.summary.EndedAt = time.Now().UnixMilli()
-		state.summary.Error = &domain.JobError{Code: "query_error", Message: err.Error()}
-		qr.mu.Lock()
-		qr.jobs[jobID] = state
-		qr.mu.Unlock()
-		return &jobHandle{id: jobID, sessionID: h.info.ID, backendPID: h.info.BackendPID}, nil
-	}
-	defer rows.Close()
-
-	fieldDescriptions := rows.FieldDescriptions()
-	if len(fieldDescriptions) == 0 {
-		rows.Close()
-		if err := rows.Err(); err != nil {
-			state.summary.Status = domain.JobFailed
-			state.summary.EndedAt = time.Now().UnixMilli()
-			state.summary.Error = &domain.JobError{Code: "query_error", Message: err.Error()}
-		} else {
-			tag := rows.CommandTag()
-			state.summary.Status = domain.JobCompleted
-			state.summary.EndedAt = time.Now().UnixMilli()
-			state.summary.ResultSets = []domain.ResultSetSummary{{
-				ResultSetID:    domain.ResultSetID("rs_1"),
-				StatementIndex: 0,
-				CommandTag:     tag.String(),
-				RowsAffected:   tag.RowsAffected(),
-				RowCountKnown:  true,
-				RowCount:       0,
-			}}
-			state.schema = domain.ResultSchema{Columns: []domain.ColumnDef{}}
-			state.rows = [][]any{}
-		}
-		qr.mu.Lock()
-		qr.jobs[jobID] = state
-		qr.mu.Unlock()
-		return &jobHandle{id: jobID, sessionID: h.info.ID, backendPID: h.info.BackendPID}, nil
-	}
-
-	state.schema = buildSchema(fieldDescriptions, h.conn)
-	state.rows = make([][]any, 0)
-
-	for rows.Next() {
-		vals, err := rows.Values()
-		if err != nil {
-			state.summary.Status = domain.JobFailed
-			state.summary.EndedAt = time.Now().UnixMilli()
-			state.summary.Error = &domain.JobError{Code: "row_decode_error", Message: err.Error()}
-			qr.mu.Lock()
-			qr.jobs[jobID] = state
-			qr.mu.Unlock()
-			return &jobHandle{id: jobID, sessionID: h.info.ID, backendPID: h.info.BackendPID}, nil
-		}
-		rowCopy := make([]any, len(vals))
-		copy(rowCopy, vals)
-		state.rows = append(state.rows, rowCopy)
-	}
-
-	if err := rows.Err(); err != nil {
-		state.summary.Status = domain.JobFailed
-		state.summary.EndedAt = time.Now().UnixMilli()
-		state.summary.Error = &domain.JobError{Code: "query_error", Message: err.Error()}
-		qr.mu.Lock()
-		qr.jobs[jobID] = state
-		qr.mu.Unlock()
-		return &jobHandle{id: jobID, sessionID: h.info.ID, backendPID: h.info.BackendPID}, nil
-	}
-
-	state.summary.Status = domain.JobCompleted
-	state.summary.EndedAt = time.Now().UnixMilli()
-	state.summary.ResultSets = []domain.ResultSetSummary{{
-		ResultSetID:    domain.ResultSetID("rs_1"),
-		StatementIndex: 0,
-		CommandTag:     "SELECT",
-		RowsAffected:   int64(len(state.rows)),
-		RowCountKnown:  true,
-		RowCount:       int64(len(state.rows)),
-	}}
-
-	qr.mu.Lock()
-	qr.jobs[jobID] = state
-	qr.mu.Unlock()
+	go qr.runJob(context.Background(), job, h)
 
 	return &jobHandle{id: jobID, sessionID: h.info.ID, backendPID: h.info.BackendPID}, nil
 }
 
+func (qr *QueryRunner) runJob(ctx context.Context, job *Job, session *sessionHandle) {
+	defer func() {
+		qr.releaseJobSession(context.Background(), job)
+		closeJobDone(job)
+	}()
+
+	startedSnapshot := qr.markJobRunning(job)
+	qr.emitter.EmitStarted(ctx, startedSnapshot)
+
+	schema, rows, resultSummary, runErr := qr.executeSingleResultQuery(ctx, session, job.request.SQL)
+	if runErr == nil {
+		job.mu.Lock()
+		if !isTerminal(job.status) {
+			job.schema = schema
+			job.rows = rows
+			job.resultSets = []domain.ResultSetSummary{resultSummary}
+			job.status = domain.JobSucceeded
+			job.startedAt = startedSnapshot.StartedAt
+			job.endedAt = time.Now().UnixMilli()
+			job.jobErr = nil
+			jobSummary := job.snapshotLocked()
+			job.mu.Unlock()
+
+			qr.emitter.EmitResultSet(ctx, jobSummary, schema)
+			qr.emitter.EmitCompleted(ctx, jobSummary)
+			return
+		}
+		job.mu.Unlock()
+		return
+	}
+
+	status, jobErr := qr.classifyExecutionError(job, runErr)
+	terminal := qr.finishWithError(job, status, jobErr)
+
+	switch terminal.Status {
+	case domain.JobCanceled:
+		qr.emitter.EmitCanceled(ctx, terminal)
+	default:
+		qr.emitter.EmitFailed(ctx, terminal)
+	}
+}
+
+func (qr *QueryRunner) executeSingleResultQuery(ctx context.Context, session *sessionHandle, sql string) (domain.ResultSchema, [][]any, domain.ResultSetSummary, error) {
+	rows, err := session.conn.Query(ctx, sql)
+	if err != nil {
+		return domain.ResultSchema{}, nil, domain.ResultSetSummary{}, err
+	}
+	defer rows.Close()
+
+	fieldDescriptions := rows.FieldDescriptions()
+	schema := buildSchema(fieldDescriptions, session.conn)
+	storedRows := make([][]any, 0)
+
+	for rows.Next() {
+		vals, err := rows.Values()
+		if err != nil {
+			return domain.ResultSchema{}, nil, domain.ResultSetSummary{}, fmt.Errorf("row decode: %w", err)
+		}
+		storedRows = append(storedRows, cloneRow(vals))
+	}
+
+	if err := rows.Err(); err != nil {
+		return domain.ResultSchema{}, nil, domain.ResultSetSummary{}, err
+	}
+
+	commandTag := rows.CommandTag()
+	summary := domain.ResultSetSummary{
+		ResultSetID:    resultSetIDDefault,
+		StatementIndex: 0,
+		CommandTag:     commandTag.String(),
+		RowsAffected:   commandTag.RowsAffected(),
+		RowCountKnown:  true,
+		RowCount:       int64(len(storedRows)),
+	}
+	if len(fieldDescriptions) == 0 {
+		schema = domain.ResultSchema{Columns: []domain.ColumnDef{}}
+		summary.RowCount = 0
+	}
+	return schema, storedRows, summary, nil
+}
+
+func (qr *QueryRunner) markJobRunning(job *Job) domain.JobSummary {
+	now := time.Now().UnixMilli()
+	job.mu.Lock()
+	if job.status == domain.JobQueued {
+		job.status = domain.JobRunning
+		job.startedAt = now
+	}
+	snapshot := job.snapshotLocked()
+	job.mu.Unlock()
+	return snapshot
+}
+
+func (qr *QueryRunner) classifyExecutionError(job *Job, err error) (domain.JobStatus, *domain.JobError) {
+	job.mu.RLock()
+	cancelRequested := job.cancelRequested
+	job.mu.RUnlock()
+
+	if cancelRequested && isQueryCanceledError(err) {
+		return domain.JobCanceled, &domain.JobError{Code: "query_canceled", Message: err.Error()}
+	}
+	return domain.JobFailed, &domain.JobError{Code: "query_error", Message: err.Error()}
+}
+
+func (qr *QueryRunner) finishWithError(job *Job, status domain.JobStatus, jobErr *domain.JobError) domain.JobSummary {
+	job.mu.Lock()
+	if !isTerminal(job.status) {
+		job.status = status
+		if job.startedAt == 0 {
+			job.startedAt = time.Now().UnixMilli()
+		}
+		job.endedAt = time.Now().UnixMilli()
+		job.jobErr = jobErr
+	}
+	snapshot := job.snapshotLocked()
+	job.mu.Unlock()
+	return snapshot
+}
+
+func closeJobDone(job *Job) {
+	job.mu.Lock()
+	defer job.mu.Unlock()
+	select {
+	case <-job.done:
+		return
+	default:
+		close(job.done)
+	}
+}
+
 func (qr *QueryRunner) CancelJob(ctx context.Context, jobID domain.JobID) error {
-	qr.mu.RLock()
-	job, ok := qr.jobs[jobID]
-	qr.mu.RUnlock()
+	job, ok := qr.registry.Get(jobID)
 	if !ok {
 		return fmt.Errorf("job %q not found", jobID)
 	}
+
+	job.mu.Lock()
+	if isTerminal(job.status) {
+		job.mu.Unlock()
+		return nil
+	}
 	if job.backendPID == 0 {
+		job.mu.Unlock()
 		return fmt.Errorf("job %q cannot be canceled: missing backend PID", jobID)
 	}
+	if job.cancelRequested {
+		job.mu.Unlock()
+		return nil
+	}
+	job.cancelRequested = true
+	job.cancelStarted = true
+	backendPID := job.backendPID
+	database := job.database
+	job.mu.Unlock()
 
-	cfg, err := buildConnConfig(qr.profile, job.summary.Database)
+	go qr.sendCancel(context.Background(), jobID, database, backendPID)
+	_ = ctx
+	return nil
+}
+
+func (qr *QueryRunner) sendCancel(ctx context.Context, jobID domain.JobID, database string, backendPID int) {
+	defer qr.resetCancelStarted(jobID)
+
+	cfg, err := buildConnConfig(qr.profile, database)
 	if err != nil {
-		return err
+		return
 	}
 
 	conn, err := pgx.ConnectConfig(ctx, cfg)
 	if err != nil {
-		return fmt.Errorf("open cancel connection: %w", err)
+		return
 	}
 	defer conn.Close(ctx)
 
 	var canceled bool
-	if err := conn.QueryRow(ctx, "select pg_cancel_backend($1)", job.backendPID).Scan(&canceled); err != nil {
-		return fmt.Errorf("run pg_cancel_backend: %w", err)
+	if err := conn.QueryRow(ctx, "select pg_cancel_backend($1)", backendPID).Scan(&canceled); err != nil {
+		return
 	}
 	if !canceled {
-		return fmt.Errorf("cancel request was not confirmed for job %q (pid=%d)", jobID, job.backendPID)
+		return
 	}
-
-	qr.mu.Lock()
-	if current, exists := qr.jobs[jobID]; exists {
-		current.summary.Status = domain.JobCanceled
-		current.summary.EndedAt = time.Now().UnixMilli()
-	}
-	qr.mu.Unlock()
-
-	// TODO: True mid-flight cancellation requires async job execution with dedicated goroutines.
-	return nil
 }
 
 func (qr *QueryRunner) GetJob(ctx context.Context, jobID domain.JobID) (domain.JobSummary, error) {
 	_ = ctx
-	qr.mu.RLock()
-	defer qr.mu.RUnlock()
-
-	job, ok := qr.jobs[jobID]
+	job, ok := qr.registry.Get(jobID)
 	if !ok {
 		return domain.JobSummary{}, fmt.Errorf("job %q not found", jobID)
 	}
-	return job.summary, nil
+	return job.snapshot(), nil
 }
 
 func (qr *QueryRunner) GetResultSchema(ctx context.Context, req domain.GetResultSchemaRequest) (domain.ResultSchema, error) {
 	_ = ctx
-	qr.mu.RLock()
-	defer qr.mu.RUnlock()
-
-	job, ok := qr.jobs[req.JobID]
+	job, ok := qr.registry.Get(req.JobID)
 	if !ok {
 		return domain.ResultSchema{}, fmt.Errorf("job %q not found", req.JobID)
 	}
-	return job.schema, nil
+	if !isDefaultResultSetID(req.ResultSetID) {
+		return domain.ResultSchema{}, fmt.Errorf("result set %q not found for job %q", req.ResultSetID, req.JobID)
+	}
+
+	job.mu.RLock()
+	schema := domain.ResultSchema{Columns: make([]domain.ColumnDef, len(job.schema.Columns))}
+	copy(schema.Columns, job.schema.Columns)
+	job.mu.RUnlock()
+
+	return schema, nil
 }
 
 func (qr *QueryRunner) GetRows(ctx context.Context, req domain.GetRowsRequest) (domain.GetRowsResponse, error) {
 	_ = ctx
-	qr.mu.RLock()
-	defer qr.mu.RUnlock()
-
-	job, ok := qr.jobs[req.JobID]
+	job, ok := qr.registry.Get(req.JobID)
 	if !ok {
 		return domain.GetRowsResponse{}, fmt.Errorf("job %q not found", req.JobID)
 	}
+	if !isDefaultResultSetID(req.ResultSetID) {
+		return domain.GetRowsResponse{}, fmt.Errorf("result set %q not found for job %q", req.ResultSetID, req.JobID)
+	}
 
+	job.mu.RLock()
+	status := job.status
+	total := len(job.rows)
 	start := req.Start
 	if start < 0 {
 		start = 0
 	}
-	if start > len(job.rows) {
-		start = len(job.rows)
+	if start > total {
+		start = total
 	}
 
 	count := req.Count
@@ -243,32 +397,103 @@ func (qr *QueryRunner) GetRows(ctx context.Context, req domain.GetRowsRequest) (
 	}
 
 	end := start + count
-	if end > len(job.rows) {
-		end = len(job.rows)
+	if end > total {
+		end = total
 	}
 
 	paged := make([][]any, end-start)
-	copy(paged, job.rows[start:end])
+	for i := start; i < end; i++ {
+		paged[i-start] = cloneRow(job.rows[i])
+	}
+	job.mu.RUnlock()
 
-	return domain.GetRowsResponse{Start: start, Rows: paged, RowCountKnown: true, RowCount: int64(len(job.rows))}, nil
+	if !isTerminal(status) {
+		return domain.GetRowsResponse{Start: start, Rows: paged, RowCountKnown: false}, nil
+	}
+
+	return domain.GetRowsResponse{Start: start, Rows: paged, RowCountKnown: true, RowCount: int64(total)}, nil
 }
 
 func (qr *QueryRunner) DisposeJob(ctx context.Context, jobID domain.JobID) error {
 	_ = ctx
 
-	var sessionID domain.SessionID
-	qr.mu.Lock()
-	if job, ok := qr.jobs[jobID]; ok {
-		sessionID = job.sessionID
-		delete(qr.jobs, jobID)
-	}
-	qr.mu.Unlock()
-
-	if sessionID == "" {
+	job, ok := qr.registry.Get(jobID)
+	if !ok {
 		return nil
 	}
 
-	return qr.sessionManager.ReleaseDedicatedSession(context.Background(), sessionID)
+	job.mu.Lock()
+	if job.disposed {
+		job.mu.Unlock()
+		return nil
+	}
+	if !isTerminal(job.status) {
+		status := job.status
+		job.mu.Unlock()
+		return fmt.Errorf("job %q is still %s", jobID, status)
+	}
+	job.disposed = true
+	job.mu.Unlock()
+
+	qr.registry.Delete(jobID)
+	return nil
+}
+
+func (qr *QueryRunner) releaseJobSession(ctx context.Context, job *Job) {
+	job.mu.Lock()
+	if job.sessionReleased {
+		job.mu.Unlock()
+		return
+	}
+	job.sessionReleased = true
+	sessionID := job.sessionID
+	job.mu.Unlock()
+
+	if qr.sessionManager == nil {
+		return
+	}
+
+	_ = qr.sessionManager.ReleaseDedicatedSession(ctx, sessionID)
+}
+
+func (qr *QueryRunner) resetCancelStarted(jobID domain.JobID) {
+	// State is not forced here; terminal status is resolved by the runner based on
+	// the actual execution error so cancellation races don't clobber natural completion.
+	job, ok := qr.registry.Get(jobID)
+	if !ok {
+		return
+	}
+
+	job.mu.Lock()
+	job.cancelStarted = false
+	job.mu.Unlock()
+}
+
+func (j *Job) snapshot() domain.JobSummary {
+	j.mu.RLock()
+	defer j.mu.RUnlock()
+	return j.snapshotLocked()
+}
+
+func (j *Job) snapshotLocked() domain.JobSummary {
+	resultSets := cloneResultSetSummaries(j.resultSets)
+
+	var copiedErr *domain.JobError
+	if j.jobErr != nil {
+		errCopy := *j.jobErr
+		copiedErr = &errCopy
+	}
+
+	return domain.JobSummary{
+		JobID:      j.id,
+		ProfileID:  j.profileID,
+		Database:   j.database,
+		Status:     j.status,
+		StartedAt:  j.startedAt,
+		EndedAt:    j.endedAt,
+		Error:      copiedErr,
+		ResultSets: resultSets,
+	}
 }
 
 func (h *jobHandle) ID() domain.JobID {
@@ -322,5 +547,52 @@ func categoryForType(dbTypeName string) string {
 		return "binary"
 	default:
 		return "other"
+	}
+}
+
+func isTerminal(status domain.JobStatus) bool {
+	return status == domain.JobSucceeded || status == domain.JobFailed || status == domain.JobCanceled
+}
+
+func isQueryCanceledError(err error) bool {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return pgErr.Code == pgCodeQueryCanceled
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "canceling statement due to user request")
+}
+
+func isDefaultResultSetID(resultSetID domain.ResultSetID) bool {
+	return resultSetID == "" || resultSetID == resultSetIDDefault
+}
+
+func cloneResultSetSummaries(resultSets []domain.ResultSetSummary) []domain.ResultSetSummary {
+	if len(resultSets) == 0 {
+		return []domain.ResultSetSummary{}
+	}
+	copied := make([]domain.ResultSetSummary, len(resultSets))
+	copy(copied, resultSets)
+	return copied
+}
+
+func cloneRow(row []any) []any {
+	copied := make([]any, len(row))
+	for i, value := range row {
+		copied[i] = cloneValue(value)
+	}
+	return copied
+}
+
+func cloneValue(value any) any {
+	switch v := value.(type) {
+	case []byte:
+		if v == nil {
+			return []byte(nil)
+		}
+		copied := make([]byte, len(v))
+		copy(copied, v)
+		return copied
+	default:
+		return value
 	}
 }

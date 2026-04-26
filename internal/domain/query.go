@@ -25,7 +25,9 @@ type RunQueryRequest struct {
 }
 
 type RunQueryResponse struct {
-	JobID JobID `json:"jobId"`
+	JobID      JobID     `json:"jobId"`
+	SessionID  SessionID `json:"sessionId"`
+	BackendPID int       `json:"backendPid"`
 }
 
 type JobStatus string
@@ -33,7 +35,7 @@ type JobStatus string
 const (
 	JobQueued    JobStatus = "queued"
 	JobRunning   JobStatus = "running"
-	JobCompleted JobStatus = "completed"
+	JobSucceeded JobStatus = "succeeded"
 	JobFailed    JobStatus = "failed"
 	JobCanceled  JobStatus = "canceled"
 )

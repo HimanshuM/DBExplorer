@@ -69,7 +69,7 @@ func (s *QueryService) RunQuery(ctx context.Context, req domain.RunQueryRequest)
 		return domain.RunQueryResponse{}, fmt.Errorf("run query: %w", err)
 	}
 
-	return domain.RunQueryResponse{JobID: handle.ID()}, nil
+	return domain.RunQueryResponse{JobID: handle.ID(), SessionID: handle.SessionID(), BackendPID: handle.BackendPID()}, nil
 }
 
 func (s *QueryService) GetJob(ctx context.Context, profileID domain.ConnProfileID, jobID domain.JobID) (domain.JobSummary, error) {
