@@ -12,6 +12,7 @@ type Conn struct {
 	profile        domain.ConnProfile
 	sessionManager *SessionManager
 	queryRunner    *QueryRunner
+	explorer       *Explorer
 }
 
 func NewConn(profile domain.ConnProfile) *Conn {
@@ -21,7 +22,8 @@ func NewConn(profile domain.ConnProfile) *Conn {
 func NewConnWithJobEventEmitter(profile domain.ConnProfile, emitter JobEventEmitter) *Conn {
 	sm := NewSessionManager(profile)
 	qr := NewQueryRunner(profile, sm, WithJobEventEmitter(emitter))
-	return &Conn{profile: profile, sessionManager: sm, queryRunner: qr}
+	explorer := NewExplorer(profile)
+	return &Conn{profile: profile, sessionManager: sm, queryRunner: qr, explorer: explorer}
 }
 
 func (c *Conn) Kind() domain.ConnectionKind {
@@ -42,6 +44,10 @@ func (c *Conn) SessionManager() driver.SessionManager {
 
 func (c *Conn) QueryRunner() driver.QueryRunner {
 	return c.queryRunner
+}
+
+func (c *Conn) Explorer() driver.Explorer {
+	return c.explorer
 }
 
 func buildConnConfig(profile domain.ConnProfile, database string) (*pgx.ConnConfig, error) {

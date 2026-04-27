@@ -22,13 +22,18 @@ var assets embed.FS
 
 func main() {
 	app := NewApp()
-	connectionAPI, queryAPI := buildAPIs(app)
+	connectionAPI, queryAPI, explorerAPI := buildAPIs(app)
 
 	err := wails.Run(&options.App{
 		Title:     "DB Explorer",
 		Width:     1280,
 		Height:    820,
 		Frameless: true,
+		BackgroundColour: options.NewRGB(
+			16,
+			19,
+			24,
+		),
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 		},
@@ -37,6 +42,7 @@ func main() {
 			app,
 			connectionAPI,
 			queryAPI,
+			explorerAPI,
 		},
 	})
 	if err != nil {
@@ -44,7 +50,7 @@ func main() {
 	}
 }
 
-func buildAPIs(app *App) (*api.ConnectionAPI, *api.QueryAPI) {
+func buildAPIs(app *App) (*api.ConnectionAPI, *api.QueryAPI, *api.ExplorerAPI) {
 	registry := driver.NewRegistry()
 	if err := registry.Register(postgres.NewFactory(
 		postgres.WithFactoryJobEventEmitter(NewWailsJobEventEmitter(app)),
@@ -61,8 +67,9 @@ func buildAPIs(app *App) (*api.ConnectionAPI, *api.QueryAPI) {
 
 	connectionService := service.NewConnectionServiceWithStore(registry, profiles, profileStore)
 	queryService := service.NewQueryService(registry, profiles)
+	explorerService := service.NewExplorerService(registry, profiles)
 
-	return api.NewConnectionAPI(connectionService), api.NewQueryAPI(queryService)
+	return api.NewConnectionAPI(connectionService), api.NewQueryAPI(queryService), api.NewExplorerAPI(explorerService)
 }
 
 func profileStorePath() string {

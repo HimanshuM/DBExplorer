@@ -29,6 +29,7 @@ type DriverConn interface {
 	Close() error
 	SessionManager() SessionManager
 	QueryRunner() QueryRunner
+	Explorer() Explorer
 }
 
 type SessionInfo struct {
@@ -55,6 +56,14 @@ type QueryRunner interface {
 	GetResultSchema(ctx context.Context, req domain.GetResultSchemaRequest) (domain.ResultSchema, error)
 	GetRows(ctx context.Context, req domain.GetRowsRequest) (domain.GetRowsResponse, error)
 	DisposeJob(ctx context.Context, jobID domain.JobID) error
+}
+
+type Explorer interface {
+	ListDatabases(ctx context.Context) ([]domain.ExplorerDatabase, error)
+	ListSchemas(ctx context.Context, database string) ([]domain.ExplorerSchema, error)
+	ListSchemaObjects(ctx context.Context, database string, schema string) ([]domain.ExplorerObject, error)
+	GetTableInfo(ctx context.Context, database string, schema string, table string) (domain.TableInfo, error)
+	GetObjectInfo(ctx context.Context, database string, schema string, name string, kind domain.ExplorerObjectKind) (domain.ObjectInfo, error)
 }
 
 type JobHandle interface {

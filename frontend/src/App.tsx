@@ -10,6 +10,12 @@ import {
   RunQuery,
 } from '../wailsjs/go/api/QueryAPI';
 import { ListProfiles, SaveProfile, TestConnection } from '../wailsjs/go/api/ConnectionAPI';
+import {
+  GetObjectInfo,
+  ListDatabases as ListExplorerDatabases,
+  ListSchemaObjects as ListExplorerSchemaObjects,
+  ListSchemas as ListExplorerSchemas,
+} from '../wailsjs/go/api/ExplorerAPI';
 import { domain } from '../wailsjs/go/models';
 import {
   EventsOn,
@@ -18,86 +24,40 @@ import {
   WindowMinimise,
   WindowToggleMaximise,
 } from '../wailsjs/runtime/runtime';
-
-const initialSQL = `select *
-from pg_catalog.pg_tables
-where schemaname not in ('pg_catalog', 'information_schema')
-order by schemaname, tablename
-limit 100;`;
-
-const terminalStatuses = new Set(['succeeded', 'failed', 'canceled']);
-
-type ResultState = {
-  schema: domain.ResultSchema | null;
-  rows: domain.GetRowsResponse | null;
-};
-
-type SQLExecutionTarget = {
-  sql: string;
-  mode: 'selection' | 'statement';
-  startOffset: number;
-  endOffset: number;
-  cursorEndOffset?: number;
-};
-
-type JobResultSetEvent = {
-  summary: domain.JobSummary;
-  schema: domain.ResultSchema;
-};
-
-type EditorTab = {
-  id: string;
-  title: string;
-  sql: string;
-  job: domain.JobSummary | null;
-  activeJobID: string;
-  result: ResultState;
-  running: boolean;
-  error: string;
-};
-
-type ProfileFormState = {
-  id: string;
-  name: string;
-  host: string;
-  port: string;
-  user: string;
-  password: string;
-  database: string;
-  sslMode: string;
-};
-
-const defaultProfileForm: ProfileFormState = {
-  id: 'local_pg',
-  name: 'Local Postgres',
-  host: 'localhost',
-  port: '5432',
-  user: 'postgres',
-  password: '',
-  database: 'postgres',
-  sslMode: 'disable',
-};
-
-function createEditorTab(index: number): EditorTab {
-  return {
-    id: `query_${index}`,
-    title: `Query ${index}`,
-    sql: initialSQL,
-    job: null,
-    activeJobID: '',
-    result: { schema: null, rows: null },
-    running: false,
-    error: '',
-  };
-}
+import { ConnectionForm, buildProfile, defaultProfileForm } from './connectionForm';
+import {
+  ExplorerTree,
+  explorerNodeID,
+  groupExplorerObjects,
+  isDataExplorerObject,
+  isInspectableExplorerObject,
+  objectInfoTabID,
+  updateExplorerNodeList,
+} from './explorerTree';
+import { formatError, jobStatusError, quoteIdentifier } from './format';
+import { ObjectInfoWorkspace, objectKindLabel } from './objectInfo';
+import { createEditorTab, terminalStatuses } from './queryTabs';
+import { ResultTable, resultLabel } from './resultTable';
+import { getSQLExecutionTarget } from './sqlSelection';
+import { StatusBar, collectRunningJobStatusItems } from './statusBar';
+import {
+  type EditorTab,
+  type ExplorerTreeNode,
+  type JobResultSetEvent,
+  type ObjectInfoTab,
+  type ProfileFormState,
+} from './types';
 
 export default function App() {
   const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null);
   const tabsRef = useRef<EditorTab[]>([]);
+  const objectTabsRef = useRef<ObjectInfoTab[]>([]);
   const tabCounterRef = useRef(1);
   const selectedProfileIDRef = useRef('');
   const [tabs, setTabs] = useState<EditorTab[]>(() => [createEditorTab(1)]);
   const [activeTabID, setActiveTabID] = useState('query_1');
+  const [objectTabs, setObjectTabs] = useState<ObjectInfoTab[]>([]);
+  const [activeWorkspaceTabID, setActiveWorkspaceTabID] = useState('query_1');
   const [profiles, setProfiles] = useState<domain.ConnProfile[]>([]);
   const [selectedProfileID, setSelectedProfileID] = useState('');
   const [loadingProfiles, setLoadingProfiles] = useState(true);
@@ -108,6 +68,9 @@ export default function App() {
   const [testingProfile, setTestingProfile] = useState(false);
   const [connectionMessage, setConnectionMessage] = useState('');
   const [windowMaximized, setWindowMaximized] = useState(false);
+  const [explorerNodes, setExplorerNodes] = useState<ExplorerTreeNode[]>([]);
+  const [selectedExplorerNodeID, setSelectedExplorerNodeID] = useState('');
+  const [statusPanelOpen, setStatusPanelOpen] = useState(false);
   const handleRunRef = useRef<() => void>(() => {});
 
   const selectedProfile = useMemo(
@@ -120,17 +83,52 @@ export default function App() {
     [activeTabID, tabs],
   );
 
+  const activeObjectTab = useMemo(
+    () => objectTabs.find((tab) => tab.id === activeWorkspaceTabID) ?? null,
+    [activeWorkspaceTabID, objectTabs],
+  );
+
+  const activeWorkspaceIsQuery = !activeObjectTab;
+
   const visibleResult = activeTab?.result ?? { schema: null, rows: null };
   const visibleError = activeTab?.error || activeTab?.job?.error?.message || globalError;
   const status = activeTab?.job?.status ?? 'idle';
+  const runningJobItems = useMemo(
+    () => collectRunningJobStatusItems(tabs, objectTabs),
+    [tabs, objectTabs],
+  );
 
   useEffect(() => {
     tabsRef.current = tabs;
   }, [tabs]);
 
   useEffect(() => {
+    objectTabsRef.current = objectTabs;
+  }, [objectTabs]);
+
+  useEffect(() => {
     selectedProfileIDRef.current = selectedProfileID;
   }, [selectedProfileID]);
+
+  useEffect(() => {
+    setExplorerNodes((current) =>
+      profiles.map((profile) => {
+        const existing = current.find((node) => node.id === explorerNodeID('profile', profile.id));
+        return {
+          id: explorerNodeID('profile', profile.id),
+          label: profile.name || profile.id,
+          detail: profile.database || profile.host,
+          kind: 'connection',
+          profileID: profile.id,
+          expanded: existing?.expanded ?? false,
+          loaded: existing?.loaded ?? false,
+          loading: existing?.loading ?? false,
+          error: existing?.error,
+          children: existing?.children ?? [],
+        };
+      }),
+    );
+  }, [profiles]);
 
   useEffect(() => {
     let canceled = false;
@@ -160,35 +158,62 @@ export default function App() {
       return tabsRef.current.find((tab) => tab.activeJobID === jobID || tab.job?.jobId === jobID);
     }
 
+    function findObjectTabByJobID(jobID: string) {
+      return objectTabsRef.current.find(
+        (tab) => tab.dataActiveJobID === jobID || tab.dataJob?.jobId === jobID,
+      );
+    }
+
     function applyJobSummary(rawSummary: unknown) {
       const summary = domain.JobSummary.createFrom(rawSummary);
       const tab = findTabByJobID(summary.jobId);
-      if (!tab) {
+      if (tab) {
+        updateTab(tab.id, {
+          job: summary,
+          running: !terminalStatuses.has(summary.status),
+          activeJobID: terminalStatuses.has(summary.status) ? '' : tab.activeJobID,
+        });
         return;
       }
 
-      updateTab(tab.id, {
-        job: summary,
-        running: !terminalStatuses.has(summary.status),
-        activeJobID: terminalStatuses.has(summary.status) ? '' : tab.activeJobID,
-      });
+      const objectTab = findObjectTabByJobID(summary.jobId);
+      if (objectTab) {
+        updateObjectTab(objectTab.id, {
+          dataJob: summary,
+          dataRunning: !terminalStatuses.has(summary.status),
+          dataActiveJobID: terminalStatuses.has(summary.status) ? '' : objectTab.dataActiveJobID,
+        });
+      }
     }
 
     function applyCompletedJob(rawSummary: unknown) {
       const summary = domain.JobSummary.createFrom(rawSummary);
       const tab = findTabByJobID(summary.jobId);
-      if (!tab) {
+      if (tab) {
+        updateTab(tab.id, {
+          job: summary,
+          running: false,
+          activeJobID: '',
+        });
+
+        if (summary.status === 'succeeded') {
+          void loadFirstResultPage(summary.profileId || selectedProfileIDRef.current, summary, tab.id);
+        }
         return;
       }
 
-      updateTab(tab.id, {
-        job: summary,
-        running: false,
-        activeJobID: '',
-      });
+      const objectTab = findObjectTabByJobID(summary.jobId);
+      if (objectTab) {
+        updateObjectTab(objectTab.id, {
+          dataJob: summary,
+          dataRunning: false,
+          dataActiveJobID: '',
+          dataError: summary.status === 'succeeded' ? '' : jobStatusError(summary),
+        });
 
-      if (summary.status === 'succeeded') {
-        void loadFirstResultPage(summary.profileId || selectedProfileIDRef.current, summary, tab.id);
+        if (summary.status === 'succeeded') {
+          void loadFirstObjectDataPage(summary.profileId || objectTab.node.profileID, summary, objectTab.id);
+        }
       }
     }
 
@@ -196,18 +221,29 @@ export default function App() {
       const event = rawEvent as JobResultSetEvent;
       const summary = domain.JobSummary.createFrom(event.summary);
       const tab = findTabByJobID(summary.jobId);
-      if (!tab) {
+      if (tab) {
+        updateTab(tab.id, (current) => ({
+          ...current,
+          job: summary,
+          result: {
+            ...current.result,
+            schema: domain.ResultSchema.createFrom(event.schema),
+          },
+        }));
         return;
       }
 
-      updateTab(tab.id, (current) => ({
-        ...current,
-        job: summary,
-        result: {
-          ...current.result,
-          schema: domain.ResultSchema.createFrom(event.schema),
-        },
-      }));
+      const objectTab = findObjectTabByJobID(summary.jobId);
+      if (objectTab) {
+        updateObjectTab(objectTab.id, (current) => ({
+          ...current,
+          dataJob: summary,
+          data: {
+            ...current.data,
+            schema: domain.ResultSchema.createFrom(event.schema),
+          },
+        }));
+      }
     }
 
     const unsubscribe = [
@@ -283,6 +319,20 @@ export default function App() {
     );
   }
 
+  function updateObjectTab(
+    tabID: string,
+    patch: Partial<ObjectInfoTab> | ((tab: ObjectInfoTab) => ObjectInfoTab),
+  ) {
+    setObjectTabs((current) =>
+      current.map((tab) => {
+        if (tab.id !== tabID) {
+          return tab;
+        }
+        return typeof patch === 'function' ? patch(tab) : { ...tab, ...patch };
+      }),
+    );
+  }
+
   function updateActiveTabSQL(value: string) {
     if (activeTab) {
       updateTab(activeTab.id, { sql: value });
@@ -295,6 +345,7 @@ export default function App() {
     const nextTab = createEditorTab(nextIndex);
     setTabs((current) => [...current, nextTab]);
     setActiveTabID(nextTab.id);
+    setActiveWorkspaceTabID(nextTab.id);
   }
 
   function closeEditorTab(tabID: string) {
@@ -307,6 +358,17 @@ export default function App() {
     setTabs(remainingTabs);
     if (activeTabID === tabID) {
       setActiveTabID(remainingTabs[0]?.id ?? '');
+    }
+    if (activeWorkspaceTabID === tabID) {
+      setActiveWorkspaceTabID(remainingTabs[0]?.id ?? objectTabsRef.current[0]?.id ?? '');
+    }
+  }
+
+  function closeObjectTab(tabID: string) {
+    const remainingTabs = objectTabsRef.current.filter((candidate) => candidate.id !== tabID);
+    setObjectTabs(remainingTabs);
+    if (activeWorkspaceTabID === tabID) {
+      setActiveWorkspaceTabID(activeTabID || remainingTabs[0]?.id || '');
     }
   }
 
@@ -425,15 +487,238 @@ export default function App() {
 
   async function handleCancel() {
     const tab = activeTab;
-    if (!selectedProfileID || !tab?.activeJobID) {
+    const cancelProfileID = tab?.job?.profileId || selectedProfileID;
+    if (!cancelProfileID || !tab?.activeJobID) {
       return;
     }
 
     try {
-      await CancelJob(selectedProfileID, tab.activeJobID);
+      await CancelJob(cancelProfileID, tab.activeJobID);
     } catch (err) {
       updateTab(tab.id, { error: formatError(err) });
     }
+  }
+
+  async function handleExplorerNodeClick(node: ExplorerTreeNode) {
+    setSelectedExplorerNodeID(node.id);
+
+    if (node.kind === 'connection') {
+      setSelectedProfileID(node.profileID);
+    }
+
+    if (isInspectableExplorerObject(node)) {
+      setSelectedProfileID(node.profileID);
+      openObjectInfoTab(node);
+      return;
+    }
+
+    await toggleExplorerNode(node);
+  }
+
+  function openObjectInfoTab(node: ExplorerTreeNode) {
+    const tabID = objectInfoTabID(node);
+    const existing = objectTabsRef.current.find((tab) => tab.id === tabID);
+
+    if (!existing) {
+      const tab: ObjectInfoTab = {
+        id: tabID,
+        title: `${objectKindLabel(node.kind)}: ${node.objectName ?? node.label}`,
+        node,
+        section: 'overview',
+        state: { loading: true, error: '', info: null },
+        data: { schema: null, rows: null },
+        dataJob: null,
+        dataActiveJobID: '',
+        dataRunning: false,
+        dataError: '',
+      };
+      setObjectTabs((current) => [...current, tab]);
+    } else {
+      updateObjectTab(tabID, { node });
+    }
+
+    setActiveWorkspaceTabID(tabID);
+    void loadObjectInfo(tabID, node);
+  }
+
+  async function loadObjectInfo(tabID: string, node: ExplorerTreeNode) {
+    updateObjectTab(tabID, { state: { loading: true, error: '', info: null } });
+
+    try {
+      const info = await GetObjectInfo(
+        node.profileID,
+        node.database ?? '',
+        node.schema ?? '',
+        node.objectName ?? node.label,
+        node.kind as never,
+      );
+      updateObjectTab(tabID, {
+        state: { loading: false, error: '', info: domain.ObjectInfo.createFrom(info) },
+      });
+    } catch (err) {
+      updateObjectTab(tabID, { state: { loading: false, error: formatError(err), info: null } });
+    }
+  }
+
+  async function loadObjectData(tab: ObjectInfoTab) {
+    if (!isDataExplorerObject(tab.node) || tab.dataRunning) {
+      return;
+    }
+
+    updateObjectTab(tab.id, {
+      section: 'data',
+      data: { schema: null, rows: null },
+      dataJob: null,
+      dataActiveJobID: '',
+      dataRunning: true,
+      dataError: '',
+    });
+
+    try {
+      const sql = `select *\nfrom ${quoteIdentifier(tab.node.schema ?? 'public')}.${quoteIdentifier(tab.node.objectName ?? tab.node.label)}\nlimit 100;`;
+      const response = await RunQuery(domain.RunQueryRequest.createFrom({
+        profileId: tab.node.profileID,
+        database: tab.node.database ?? '',
+        sql,
+        statements: [{ startOffset: 0, endOffset: sql.length, text: sql }],
+        mode: 'statement',
+        readOnly: true,
+      }));
+
+      updateObjectTab(tab.id, {
+        dataActiveJobID: response.jobId,
+        dataJob: domain.JobSummary.createFrom({
+          jobId: response.jobId,
+          profileId: tab.node.profileID,
+          database: tab.node.database,
+          status: 'queued',
+          startedAt: 0,
+          endedAt: 0,
+          resultSets: [],
+        }),
+      });
+      void syncObjectDataJob(tab.id, tab.node.profileID, response.jobId);
+    } catch (err) {
+      updateObjectTab(tab.id, {
+        dataRunning: false,
+        dataError: formatError(err),
+      });
+    }
+  }
+
+  async function syncObjectDataJob(tabID: string, profileID: string, jobID: string) {
+    try {
+      const nextJob = await GetJob(profileID, jobID);
+
+      if (terminalStatuses.has(nextJob.status)) {
+        updateObjectTab(tabID, {
+          dataJob: nextJob,
+          dataRunning: false,
+          dataActiveJobID: '',
+          dataError: nextJob.status === 'succeeded' ? '' : jobStatusError(nextJob),
+        });
+
+        if (nextJob.status === 'succeeded') {
+          await loadFirstObjectDataPage(nextJob.profileId || profileID, nextJob, tabID);
+        }
+        return;
+      }
+
+      updateObjectTab(tabID, {
+        dataJob: nextJob,
+        dataRunning: true,
+        dataActiveJobID: jobID,
+      });
+    } catch (err) {
+      updateObjectTab(tabID, {
+        dataRunning: false,
+        dataActiveJobID: '',
+        dataError: formatError(err),
+      });
+    }
+  }
+
+  async function toggleExplorerNode(node: ExplorerTreeNode) {
+    if (node.kind === 'group') {
+      updateExplorerNode(node.id, (current) => ({ ...current, expanded: !current.expanded }));
+      return;
+    }
+
+    if (node.loaded) {
+      updateExplorerNode(node.id, (current) => ({ ...current, expanded: !current.expanded }));
+      return;
+    }
+
+    updateExplorerNode(node.id, (current) => ({
+      ...current,
+      expanded: true,
+      loading: true,
+      error: '',
+    }));
+
+    try {
+      const children = await loadExplorerChildren(node);
+      updateExplorerNode(node.id, (current) => ({
+        ...current,
+        children,
+        loaded: true,
+        loading: false,
+        error: '',
+      }));
+    } catch (err) {
+      updateExplorerNode(node.id, (current) => ({
+        ...current,
+        loading: false,
+        error: formatError(err),
+      }));
+    }
+  }
+
+  function updateExplorerNode(
+    nodeID: string,
+    updater: (node: ExplorerTreeNode) => ExplorerTreeNode,
+  ) {
+    setExplorerNodes((current) => updateExplorerNodeList(current, nodeID, updater));
+  }
+
+  async function loadExplorerChildren(node: ExplorerTreeNode): Promise<ExplorerTreeNode[]> {
+    if (node.kind === 'connection') {
+      const databases = await ListExplorerDatabases(node.profileID);
+      return databases.map((database) => ({
+        id: explorerNodeID('database', node.profileID, database.name),
+        label: database.name,
+        kind: 'database',
+        profileID: node.profileID,
+        database: database.name,
+        expanded: false,
+        loaded: false,
+        loading: false,
+        children: [],
+      }));
+    }
+
+    if (node.kind === 'database') {
+      const schemas = await ListExplorerSchemas(node.profileID, node.database ?? '');
+      return schemas.map((schema) => ({
+        id: explorerNodeID('schema', node.profileID, node.database ?? '', schema.name),
+        label: schema.name,
+        kind: 'schema',
+        profileID: node.profileID,
+        database: node.database,
+        schema: schema.name,
+        expanded: false,
+        loaded: false,
+        loading: false,
+        children: [],
+      }));
+    }
+
+    if (node.kind === 'schema') {
+      const objects = await ListExplorerSchemaObjects(node.profileID, node.database ?? '', node.schema ?? '');
+      return groupExplorerObjects(node, objects);
+    }
+
+    return [];
   }
 
   async function loadFirstResultPage(
@@ -463,8 +748,35 @@ export default function App() {
     }
   }
 
+  async function loadFirstObjectDataPage(
+    profileID: string,
+    completedJob: domain.JobSummary,
+    tabID: string,
+  ) {
+    const resultSetID = completedJob.resultSets[0]?.resultSetId || 'rs_1';
+
+    try {
+      const [schema, rows] = await Promise.all([
+        GetResultSchema(profileID, domain.GetResultSchemaRequest.createFrom({
+          jobId: completedJob.jobId,
+          resultSetId: resultSetID,
+        })),
+        GetRows(profileID, domain.GetRowsRequest.createFrom({
+          jobId: completedJob.jobId,
+          resultSetId: resultSetID,
+          start: 0,
+          count: 100,
+        })),
+      ]);
+
+      updateObjectTab(tabID, { data: { schema, rows } });
+    } catch (err) {
+      updateObjectTab(tabID, { dataError: formatError(err) });
+    }
+  }
+
   useEffect(() => {
-    if (!tabs.some((tab) => tab.activeJobID)) {
+    if (!tabs.some((tab) => tab.activeJobID) && !objectTabs.some((tab) => tab.dataActiveJobID)) {
       return;
     }
 
@@ -505,6 +817,42 @@ export default function App() {
           }
         }),
       );
+
+      const runningObjectTabs = objectTabsRef.current.filter((tab) => tab.dataActiveJobID);
+      await Promise.all(
+        runningObjectTabs.map(async (tab) => {
+          try {
+            const nextJob = await GetJob(tab.dataJob?.profileId || tab.node.profileID, tab.dataActiveJobID);
+            if (canceled) {
+              return;
+            }
+
+            if (terminalStatuses.has(nextJob.status)) {
+              updateObjectTab(tab.id, {
+                dataJob: nextJob,
+                dataRunning: false,
+                dataActiveJobID: '',
+                dataError: nextJob.status === 'succeeded' ? '' : jobStatusError(nextJob),
+              });
+
+              if (nextJob.status === 'succeeded') {
+                await loadFirstObjectDataPage(nextJob.profileId, nextJob, tab.id);
+              }
+              return;
+            }
+
+            updateObjectTab(tab.id, { dataJob: nextJob, dataRunning: true });
+          } catch (err) {
+            if (!canceled) {
+              updateObjectTab(tab.id, {
+                dataRunning: false,
+                dataActiveJobID: '',
+                dataError: formatError(err),
+              });
+            }
+          }
+        }),
+      );
     }
 
     const interval = window.setInterval(() => {
@@ -515,7 +863,7 @@ export default function App() {
       canceled = true;
       window.clearInterval(interval);
     };
-  }, [tabs]);
+  }, [tabs, objectTabs]);
 
   return (
     <main className="app-shell">
@@ -604,19 +952,12 @@ export default function App() {
             ) : profiles.length === 0 ? (
               <div className="empty-tree">No saved connections</div>
             ) : (
-              <div className="connection-list">
-                {profiles.map((profile) => (
-                  <button
-                    type="button"
-                    key={profile.id}
-                    className={profile.id === selectedProfileID ? 'connection active' : 'connection'}
-                    onClick={() => setSelectedProfileID(profile.id)}
-                  >
-                    <span>{profile.name || profile.id}</span>
-                    <small>{profile.database || profile.host}</small>
-                  </button>
-                ))}
-              </div>
+              <ExplorerTree
+                nodes={explorerNodes}
+                selectedProfileID={selectedProfileID}
+                selectedNodeID={selectedExplorerNodeID}
+                onNodeClick={(node) => void handleExplorerNodeClick(node)}
+              />
             )}
           </div>
         </aside>
@@ -628,8 +969,11 @@ export default function App() {
                 <button
                   type="button"
                   key={tab.id}
-                  className={tab.id === activeTab?.id ? 'tab active' : 'tab'}
-                  onClick={() => setActiveTabID(tab.id)}
+                  className={tab.id === activeWorkspaceTabID ? 'tab active' : 'tab'}
+                  onClick={() => {
+                    setActiveTabID(tab.id);
+                    setActiveWorkspaceTabID(tab.id);
+                  }}
                 >
                   <span>{tab.title}</span>
                   {tab.running && <span className="tab-dot" />}
@@ -656,37 +1000,88 @@ export default function App() {
                   )}
                 </button>
               ))}
+              {objectTabs.map((tab) => (
+                <button
+                  type="button"
+                  key={tab.id}
+                  className={tab.id === activeWorkspaceTabID ? 'tab active object-tab' : 'tab object-tab'}
+                  onClick={() => setActiveWorkspaceTabID(tab.id)}
+                >
+                  <span>{tab.title}</span>
+                  {tab.dataRunning && <span className="tab-dot" />}
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    aria-label={`Close ${tab.title}`}
+                    className="tab-close"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      closeObjectTab(tab.id);
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        closeObjectTab(tab.id);
+                      }
+                    }}
+                  >
+                    x
+                  </span>
+                </button>
+              ))}
               <button type="button" className="new-tab" onClick={addEditorTab} aria-label="New query tab">
                 +
               </button>
             </div>
             <div className="toolbar">
-              <button type="button" onClick={handleRun} disabled={activeTab?.running || profiles.length === 0}>
+              <button
+                type="button"
+                onClick={handleRun}
+                disabled={!activeWorkspaceIsQuery || activeTab?.running || profiles.length === 0}
+              >
                 Run
               </button>
-              <button type="button" onClick={handleCancel} disabled={!activeTab?.running || !activeTab.activeJobID}>
+              <button
+                type="button"
+                onClick={handleCancel}
+                disabled={!activeWorkspaceIsQuery || !activeTab?.running || !activeTab.activeJobID}
+              >
                 Cancel
               </button>
             </div>
           </header>
 
           <section className="editor-region">
-            <Editor
-              key={activeTab?.id}
-              defaultLanguage="sql"
-              value={activeTab?.sql ?? ''}
-              onChange={(value) => updateActiveTabSQL(value ?? '')}
-              onMount={handleEditorMount}
-              theme="vs-dark"
-              options={{
-                minimap: { enabled: false },
-                fontSize: 13,
-                fontFamily: 'JetBrains Mono, Menlo, Consolas, monospace',
-                scrollBeyondLastLine: false,
-                automaticLayout: true,
-                tabSize: 2,
-              }}
-            />
+            {activeObjectTab ? (
+              <ObjectInfoWorkspace
+                tab={activeObjectTab}
+                onSectionChange={(section) => {
+                  updateObjectTab(activeObjectTab.id, { section });
+                  if (section === 'data' && !activeObjectTab.data.schema && !activeObjectTab.dataRunning) {
+                    void loadObjectData(activeObjectTab);
+                  }
+                }}
+                onRefreshData={() => void loadObjectData(activeObjectTab)}
+              />
+            ) : (
+              <Editor
+                key={activeTab?.id}
+                defaultLanguage="sql"
+                value={activeTab?.sql ?? ''}
+                onChange={(value) => updateActiveTabSQL(value ?? '')}
+                onMount={handleEditorMount}
+                theme="vs-dark"
+                options={{
+                  minimap: { enabled: false },
+                  fontSize: 13,
+                  fontFamily: 'JetBrains Mono, Menlo, Consolas, monospace',
+                  scrollBeyondLastLine: false,
+                  automaticLayout: true,
+                  tabSize: 2,
+                }}
+              />
+            )}
           </section>
 
           <section className="results-region">
@@ -706,413 +1101,12 @@ export default function App() {
           </section>
         </section>
       </div>
+      <StatusBar
+        jobs={runningJobItems}
+        open={statusPanelOpen}
+        onToggle={() => setStatusPanelOpen((current) => !current)}
+      />
     </main>
   );
 }
 
-function getSQLExecutionTarget(
-  mountedEditor: editor.IStandaloneCodeEditor | null,
-  fallbackSQL: string,
-): SQLExecutionTarget {
-  const model = mountedEditor?.getModel();
-  if (!mountedEditor || !model) {
-    return {
-      sql: fallbackSQL.trim(),
-      mode: 'statement',
-      startOffset: 0,
-      endOffset: fallbackSQL.length,
-    };
-  }
-
-  const selection = mountedEditor.getSelection();
-  if (selection && !selection.isEmpty()) {
-    const rawSelection = model.getValueInRange(selection);
-    const leadingWhitespace = rawSelection.length - rawSelection.trimStart().length;
-    const trailingWhitespace = rawSelection.length - rawSelection.trimEnd().length;
-    const startOffset = model.getOffsetAt(selection.getStartPosition()) + leadingWhitespace;
-    const endOffset = model.getOffsetAt(selection.getEndPosition()) - trailingWhitespace;
-
-    return {
-      sql: rawSelection.trim(),
-      mode: 'selection',
-      startOffset,
-      endOffset,
-    };
-  }
-
-  const position = mountedEditor.getPosition() ?? model.getPositionAt(0);
-  return findStatementAtOffset(model.getValue(), model.getOffsetAt(position));
-}
-
-function findStatementAtOffset(source: string, cursorOffset: number): SQLExecutionTarget {
-  const statements = splitSQLStatements(source);
-  const containingStatement = statements.find(
-    (statement) =>
-      cursorOffset >= statement.startOffset &&
-      cursorOffset <= (statement.cursorEndOffset ?? statement.endOffset),
-  );
-  const nextStatement = statements.find((statement) => statement.startOffset >= cursorOffset);
-  const previousStatement = [...statements]
-    .reverse()
-    .find((statement) => statement.endOffset <= cursorOffset);
-  const statement = containingStatement ?? nextStatement ?? previousStatement;
-
-  if (!statement) {
-    return {
-      sql: '',
-      mode: 'statement',
-      startOffset: cursorOffset,
-      endOffset: cursorOffset,
-    };
-  }
-
-  return statement;
-}
-
-function splitSQLStatements(source: string): SQLExecutionTarget[] {
-  const statements: SQLExecutionTarget[] = [];
-  let statementStart = 0;
-  let index = 0;
-
-  while (index < source.length) {
-    const char = source[index];
-    const next = source[index + 1];
-
-    if (char === "'") {
-      index = skipSingleQuotedString(source, index + 1);
-      continue;
-    }
-    if (char === '"') {
-      index = skipDoubleQuotedIdentifier(source, index + 1);
-      continue;
-    }
-    if (char === '-' && next === '-') {
-      index = skipLineComment(source, index + 2);
-      continue;
-    }
-    if (char === '/' && next === '*') {
-      index = skipBlockComment(source, index + 2);
-      continue;
-    }
-    if (char === '$') {
-      const dollarQuoteEnd = skipDollarQuotedString(source, index);
-      if (dollarQuoteEnd !== index) {
-        index = dollarQuoteEnd;
-        continue;
-      }
-    }
-    if (char === ';') {
-      const statementAdded = pushStatement(statements, source, statementStart, index, index + 1);
-      if (!statementAdded) {
-        extendPreviousStatementCursorBoundary(statements, index + 1);
-      }
-      statementStart = index + 1;
-    }
-
-    index += 1;
-  }
-
-  pushStatement(statements, source, statementStart, source.length, source.length);
-  return statements;
-}
-
-function pushStatement(
-  statements: SQLExecutionTarget[],
-  source: string,
-  rawStartOffset: number,
-  rawEndOffset: number,
-  cursorEndOffset: number,
-): boolean {
-  const raw = source.slice(rawStartOffset, rawEndOffset);
-  const leadingWhitespace = raw.length - raw.trimStart().length;
-  const trailingWhitespace = raw.length - raw.trimEnd().length;
-  const startOffset = rawStartOffset + leadingWhitespace;
-  const endOffset = rawEndOffset - trailingWhitespace;
-  const sql = source.slice(startOffset, endOffset);
-
-  if (sql.trim()) {
-    statements.push({ sql, mode: 'statement', startOffset, endOffset, cursorEndOffset });
-    return true;
-  }
-  return false;
-}
-
-function extendPreviousStatementCursorBoundary(
-  statements: SQLExecutionTarget[],
-  cursorEndOffset: number,
-) {
-  const previousStatement = statements[statements.length - 1];
-  if (previousStatement) {
-    previousStatement.cursorEndOffset = Math.max(
-      previousStatement.cursorEndOffset ?? previousStatement.endOffset,
-      cursorEndOffset,
-    );
-  }
-}
-
-function skipSingleQuotedString(source: string, index: number) {
-  while (index < source.length) {
-    if (source[index] === "'" && source[index + 1] === "'") {
-      index += 2;
-      continue;
-    }
-    if (source[index] === "'") {
-      return index + 1;
-    }
-    index += 1;
-  }
-  return index;
-}
-
-function skipDoubleQuotedIdentifier(source: string, index: number) {
-  while (index < source.length) {
-    if (source[index] === '"' && source[index + 1] === '"') {
-      index += 2;
-      continue;
-    }
-    if (source[index] === '"') {
-      return index + 1;
-    }
-    index += 1;
-  }
-  return index;
-}
-
-function skipLineComment(source: string, index: number) {
-  while (index < source.length && source[index] !== '\n') {
-    index += 1;
-  }
-  return index;
-}
-
-function skipBlockComment(source: string, index: number) {
-  while (index < source.length) {
-    if (source[index] === '*' && source[index + 1] === '/') {
-      return index + 2;
-    }
-    index += 1;
-  }
-  return index;
-}
-
-function skipDollarQuotedString(source: string, index: number) {
-  const match = source.slice(index).match(/^\$[A-Za-z_][A-Za-z0-9_]*\$|^\$\$/);
-  if (!match) {
-    return index;
-  }
-
-  const tag = match[0];
-  const closingIndex = source.indexOf(tag, index + tag.length);
-  if (closingIndex === -1) {
-    return source.length;
-  }
-  return closingIndex + tag.length;
-}
-
-function ConnectionForm({
-  form,
-  saving,
-  testing,
-  onChange,
-  onSave,
-  onTest,
-}: {
-  form: ProfileFormState;
-  saving: boolean;
-  testing: boolean;
-  onChange: <K extends keyof ProfileFormState>(field: K, value: ProfileFormState[K]) => void;
-  onSave: () => void;
-  onTest: () => void;
-}) {
-  const busy = saving || testing;
-
-  return (
-    <form className="connection-form" onSubmit={(event) => event.preventDefault()}>
-      <label>
-        <span>Name</span>
-        <input
-          value={form.name}
-          onChange={(event) => onChange('name', event.target.value)}
-          disabled={busy}
-        />
-      </label>
-      <label>
-        <span>ID</span>
-        <input
-          value={form.id}
-          onChange={(event) => onChange('id', event.target.value)}
-          disabled={busy}
-        />
-      </label>
-      <div className="form-row">
-        <label>
-          <span>Host</span>
-          <input
-            value={form.host}
-            onChange={(event) => onChange('host', event.target.value)}
-            disabled={busy}
-          />
-        </label>
-        <label>
-          <span>Port</span>
-          <input
-            inputMode="numeric"
-            value={form.port}
-            onChange={(event) => onChange('port', event.target.value)}
-            disabled={busy}
-          />
-        </label>
-      </div>
-      <label>
-        <span>User</span>
-        <input
-          value={form.user}
-          onChange={(event) => onChange('user', event.target.value)}
-          disabled={busy}
-        />
-      </label>
-      <label>
-        <span>Password</span>
-        <input
-          type="password"
-          value={form.password}
-          onChange={(event) => onChange('password', event.target.value)}
-          disabled={busy}
-        />
-      </label>
-      <label>
-        <span>Database</span>
-        <input
-          value={form.database}
-          onChange={(event) => onChange('database', event.target.value)}
-          disabled={busy}
-        />
-      </label>
-      <label>
-        <span>SSL Mode</span>
-        <select
-          value={form.sslMode}
-          onChange={(event) => onChange('sslMode', event.target.value)}
-          disabled={busy}
-        >
-          <option value="disable">disable</option>
-          <option value="prefer">prefer</option>
-          <option value="require">require</option>
-          <option value="verify-ca">verify-ca</option>
-          <option value="verify-full">verify-full</option>
-        </select>
-      </label>
-      <div className="form-actions">
-        <button type="button" onClick={onTest} disabled={busy}>
-          {testing ? 'Testing' : 'Test'}
-        </button>
-        <button type="button" onClick={onSave} disabled={busy}>
-          {saving && !testing ? 'Saving' : 'Save'}
-        </button>
-      </div>
-    </form>
-  );
-}
-
-function ResultTable({
-  schema,
-  rows,
-}: {
-  schema: domain.ResultSchema;
-  rows: domain.GetRowsResponse;
-}) {
-  if (schema.columns.length === 0) {
-    return <div className="result-placeholder">Query completed without tabular results</div>;
-  }
-
-  return (
-    <div className="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            <th>#</th>
-            {schema.columns.map((column) => (
-              <th key={column.name}>{column.name}</th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.rows.map((row, rowIndex) => (
-            <tr key={rows.start + rowIndex}>
-              <td>{rows.start + rowIndex + 1}</td>
-              {schema.columns.map((column, columnIndex) => (
-                <td key={column.name}>{formatCell(row[columnIndex])}</td>
-              ))}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-function resultLabel(rows: domain.GetRowsResponse) {
-  if (rows.rowCountKnown) {
-    return `Results: ${rows.rowCount} rows`;
-  }
-  return `Results: ${rows.rows.length} loaded`;
-}
-
-function buildProfile(form: ProfileFormState) {
-  const id = form.id.trim();
-  const port = Number.parseInt(form.port, 10);
-
-  if (!id) {
-    throw new Error('Connection ID is required.');
-  }
-  if (!form.name.trim()) {
-    throw new Error('Connection name is required.');
-  }
-  if (!form.host.trim()) {
-    throw new Error('Host is required.');
-  }
-  if (!form.user.trim()) {
-    throw new Error('User is required.');
-  }
-  if (!form.database.trim()) {
-    throw new Error('Database is required.');
-  }
-  if (!Number.isInteger(port) || port <= 0 || port > 65535) {
-    throw new Error('Port must be a valid TCP port.');
-  }
-
-  return domain.ConnProfile.createFrom({
-    id,
-    name: form.name.trim(),
-    kind: 'postgres',
-    host: form.host.trim(),
-    port,
-    user: form.user.trim(),
-    database: form.database.trim(),
-    sslMode: form.sslMode,
-    options: form.password ? { password: form.password } : {},
-  });
-}
-
-function formatCell(value: unknown) {
-  if (value === null || value === undefined) {
-    return 'NULL';
-  }
-  if (value instanceof Uint8Array) {
-    return `<${value.byteLength} bytes>`;
-  }
-  if (typeof value === 'object') {
-    return JSON.stringify(value);
-  }
-  return String(value);
-}
-
-function formatError(err: unknown) {
-  if (err instanceof Error) {
-    return err.message;
-  }
-  if (typeof err === 'string') {
-    return err;
-  }
-  return 'Unexpected error';
-}

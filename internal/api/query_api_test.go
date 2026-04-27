@@ -62,7 +62,8 @@ func (r *apiQueryRunner) DisposeJob(ctx context.Context, jobID domain.JobID) err
 }
 
 type apiDriverConn struct {
-	runner driver.QueryRunner
+	runner   driver.QueryRunner
+	explorer driver.Explorer
 }
 
 func (c *apiDriverConn) Kind() domain.ConnectionKind {
@@ -83,6 +84,10 @@ func (c *apiDriverConn) SessionManager() driver.SessionManager {
 
 func (c *apiDriverConn) QueryRunner() driver.QueryRunner {
 	return c.runner
+}
+
+func (c *apiDriverConn) Explorer() driver.Explorer {
+	return c.explorer
 }
 
 type apiQueryFactory struct {

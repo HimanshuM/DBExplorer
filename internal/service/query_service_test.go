@@ -91,6 +91,7 @@ func (m *fakeSessionManager) ReleaseDedicatedSession(context.Context, domain.Ses
 
 type fakeDriverConn struct {
 	runner        driver.QueryRunner
+	explorer      driver.Explorer
 	closeCalls    int
 	closeErr      error
 	sessionManger driver.SessionManager
@@ -115,6 +116,10 @@ func (c *fakeDriverConn) SessionManager() driver.SessionManager {
 
 func (c *fakeDriverConn) QueryRunner() driver.QueryRunner {
 	return c.runner
+}
+
+func (c *fakeDriverConn) Explorer() driver.Explorer {
+	return c.explorer
 }
 
 type fakeDriverFactory struct {
@@ -251,6 +256,55 @@ func TestQueryServiceGetOrOpenConnClosesDuplicateOpenedConnection(t *testing.T) 
 	}
 	if openedConn.closeCalls != 1 {
 		t.Fatalf("expected duplicate connection to be closed once, got %d", openedConn.closeCalls)
+	}
+}
+
+func TestQueryServiceCancelJobFallsBackToUniqueOpenConnection(t *testing.T) {
+	registry := driver.NewRegistry()
+	wrongProfile := domain.ConnProfile{ID: "wrong_profile", Kind: domain.ConnectionKindPostgres}
+	rightProfile := domain.ConnProfile{ID: "right_profile", Kind: domain.ConnectionKindPostgres}
+	notFoundErr := errors.New(`job "job_2" not found`)
+	rightCanceled := false
+
+	wrongConn := &fakeDriverConn{
+		runner: &fakeQueryRunner{
+			cancelJobFn: func(context.Context, domain.JobID) error {
+				return notFoundErr
+			},
+			getJobFn: func(context.Context, domain.JobID) (domain.JobSummary, error) {
+				return domain.JobSummary{}, notFoundErr
+			},
+		},
+		sessionManger: &fakeSessionManager{},
+	}
+	rightConn := &fakeDriverConn{
+		runner: &fakeQueryRunner{
+			getJobFn: func(_ context.Context, jobID domain.JobID) (domain.JobSummary, error) {
+				if jobID != "job_2" {
+					t.Fatalf("unexpected job ID: %q", jobID)
+				}
+				return domain.JobSummary{JobID: jobID, Status: domain.JobRunning}, nil
+			},
+			cancelJobFn: func(_ context.Context, jobID domain.JobID) error {
+				rightCanceled = jobID == "job_2"
+				return nil
+			},
+		},
+		sessionManger: &fakeSessionManager{},
+	}
+
+	service := NewQueryService(registry, map[domain.ConnProfileID]domain.ConnProfile{
+		wrongProfile.ID: wrongProfile,
+		rightProfile.ID: rightProfile,
+	})
+	service.conns[wrongProfile.ID] = wrongConn
+	service.conns[rightProfile.ID] = rightConn
+
+	if err := service.CancelJob(context.Background(), wrongProfile.ID, "job_2"); err != nil {
+		t.Fatalf("CancelJob returned error: %v", err)
+	}
+	if !rightCanceled {
+		t.Fatal("expected cancel to be sent to the unique open connection that owns the live job")
 	}
 }
 

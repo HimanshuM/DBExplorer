@@ -31,6 +31,9 @@ func TestNewConnWiresDependencies(t *testing.T) {
 	if conn.QueryRunner() == nil {
 		t.Fatal("expected query runner to be initialized")
 	}
+	if conn.Explorer() == nil {
+		t.Fatal("expected explorer to be initialized")
+	}
 	if !conn.Capabilities().CancelQuery || !conn.Capabilities().ParallelQueries {
 		t.Fatalf("unexpected capabilities: %+v", conn.Capabilities())
 	}

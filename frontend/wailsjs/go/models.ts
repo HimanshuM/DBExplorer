@@ -95,6 +95,68 @@ export namespace domain {
 	        this.message = source["message"];
 	    }
 	}
+	export class ExplorerDatabase {
+	    name: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ExplorerDatabase(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	    }
+	}
+	export class ExplorerObject {
+	    name: string;
+	    schema: string;
+	    kind: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ExplorerObject(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.schema = source["schema"];
+	        this.kind = source["kind"];
+	    }
+	}
+	export class ExplorerSchema {
+	    name: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ExplorerSchema(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	    }
+	}
+	export class FunctionInfo {
+	    name: string;
+	    arguments: string;
+	    resultType: string;
+	    language: string;
+	    volatility: string;
+	    returnsSet: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new FunctionInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.arguments = source["arguments"];
+	        this.resultType = source["resultType"];
+	        this.language = source["language"];
+	        this.volatility = source["volatility"];
+	        this.returnsSet = source["returnsSet"];
+	    }
+	}
 	export class GetResultSchemaRequest {
 	    jobId: string;
 	    resultSetId: string;
@@ -227,6 +289,164 @@ export namespace domain {
 		    return a;
 		}
 	}
+	export class ObjectDetail {
+	    name: string;
+	    value: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ObjectDetail(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.value = source["value"];
+	    }
+	}
+	export class SequenceInfo {
+	    dataType: string;
+	    startValue: string;
+	    minValue: string;
+	    maxValue: string;
+	    incrementBy: string;
+	    cycle: boolean;
+	    cacheSize: string;
+	    lastValue: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new SequenceInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.dataType = source["dataType"];
+	        this.startValue = source["startValue"];
+	        this.minValue = source["minValue"];
+	        this.maxValue = source["maxValue"];
+	        this.incrementBy = source["incrementBy"];
+	        this.cycle = source["cycle"];
+	        this.cacheSize = source["cacheSize"];
+	        this.lastValue = source["lastValue"];
+	    }
+	}
+	export class TableEditabilityInfo {
+	    editable: boolean;
+	    strategy: string;
+	    reason: string;
+	    keyColumns: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new TableEditabilityInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.editable = source["editable"];
+	        this.strategy = source["strategy"];
+	        this.reason = source["reason"];
+	        this.keyColumns = source["keyColumns"];
+	    }
+	}
+	export class TableIndexInfo {
+	    name: string;
+	    columns: string[];
+	    primary: boolean;
+	    unique: boolean;
+	    partial: boolean;
+	    hasExpression: boolean;
+	    valid: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new TableIndexInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.columns = source["columns"];
+	        this.primary = source["primary"];
+	        this.unique = source["unique"];
+	        this.partial = source["partial"];
+	        this.hasExpression = source["hasExpression"];
+	        this.valid = source["valid"];
+	    }
+	}
+	export class TableColumnInfo {
+	    name: string;
+	    position: number;
+	    dataType: string;
+	    typeName: string;
+	    nullable: boolean;
+	    default: string;
+	    identity: string;
+	    generated: string;
+	    primaryKey: boolean;
+	
+	    static createFrom(source: any = {}) {
+	        return new TableColumnInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.position = source["position"];
+	        this.dataType = source["dataType"];
+	        this.typeName = source["typeName"];
+	        this.nullable = source["nullable"];
+	        this.default = source["default"];
+	        this.identity = source["identity"];
+	        this.generated = source["generated"];
+	        this.primaryKey = source["primaryKey"];
+	    }
+	}
+	export class ObjectInfo {
+	    database: string;
+	    schema: string;
+	    name: string;
+	    kind: string;
+	    details: ObjectDetail[];
+	    columns: TableColumnInfo[];
+	    indexes: TableIndexInfo[];
+	    editability: TableEditabilityInfo;
+	    sequence: SequenceInfo;
+	    functions: FunctionInfo[];
+	
+	    static createFrom(source: any = {}) {
+	        return new ObjectInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.database = source["database"];
+	        this.schema = source["schema"];
+	        this.name = source["name"];
+	        this.kind = source["kind"];
+	        this.details = this.convertValues(source["details"], ObjectDetail);
+	        this.columns = this.convertValues(source["columns"], TableColumnInfo);
+	        this.indexes = this.convertValues(source["indexes"], TableIndexInfo);
+	        this.editability = this.convertValues(source["editability"], TableEditabilityInfo);
+	        this.sequence = this.convertValues(source["sequence"], SequenceInfo);
+	        this.functions = this.convertValues(source["functions"], FunctionInfo);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class ResultSchema {
 	    columns: ColumnDef[];
 	
@@ -331,6 +551,53 @@ export namespace domain {
 	        this.sessionId = source["sessionId"];
 	        this.backendPid = source["backendPid"];
 	    }
+	}
+	
+	
+	
+	
+	
+	export class TableInfo {
+	    database: string;
+	    schema: string;
+	    name: string;
+	    kind: string;
+	    columns: TableColumnInfo[];
+	    indexes: TableIndexInfo[];
+	    editability: TableEditabilityInfo;
+	
+	    static createFrom(source: any = {}) {
+	        return new TableInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.database = source["database"];
+	        this.schema = source["schema"];
+	        this.name = source["name"];
+	        this.kind = source["kind"];
+	        this.columns = this.convertValues(source["columns"], TableColumnInfo);
+	        this.indexes = this.convertValues(source["indexes"], TableIndexInfo);
+	        this.editability = this.convertValues(source["editability"], TableEditabilityInfo);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 
 }

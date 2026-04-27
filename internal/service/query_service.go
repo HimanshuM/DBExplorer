@@ -101,7 +101,45 @@ func (s *QueryService) CancelJob(ctx context.Context, profileID domain.ConnProfi
 	if err != nil {
 		return err
 	}
-	return conn.QueryRunner().CancelJob(ctx, jobID)
+	if err := conn.QueryRunner().CancelJob(ctx, jobID); err == nil {
+		return nil
+	} else if fallbackErr := s.cancelUniqueLiveJob(ctx, profileID, jobID); fallbackErr == nil {
+		return nil
+	} else {
+		return err
+	}
+}
+
+func (s *QueryService) cancelUniqueLiveJob(ctx context.Context, requestedProfileID domain.ConnProfileID, jobID domain.JobID) error {
+	s.mu.RLock()
+	candidates := make([]driver.DriverConn, 0, len(s.conns))
+	for profileID, conn := range s.conns {
+		if profileID == requestedProfileID {
+			continue
+		}
+		candidates = append(candidates, conn)
+	}
+	s.mu.RUnlock()
+
+	matches := make([]driver.DriverConn, 0, 1)
+	for _, conn := range candidates {
+		summary, err := conn.QueryRunner().GetJob(ctx, jobID)
+		if err != nil {
+			continue
+		}
+		if summary.Status == domain.JobQueued || summary.Status == domain.JobRunning {
+			matches = append(matches, conn)
+		}
+	}
+
+	if len(matches) == 0 {
+		return fmt.Errorf("job %q not found in other open connections", jobID)
+	}
+	if len(matches) > 1 {
+		return fmt.Errorf("job %q is ambiguous across open connections", jobID)
+	}
+
+	return matches[0].QueryRunner().CancelJob(ctx, jobID)
 }
 
 func (s *QueryService) DisposeJob(ctx context.Context, profileID domain.ConnProfileID, jobID domain.JobID) error {
