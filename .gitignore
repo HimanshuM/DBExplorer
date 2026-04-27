@@ -1,1 +1,8 @@
-*.out
+coverage.out
+
+# Wails build output
+build/bin/
+
+# Frontend generated artifacts
+frontend/dist/
+frontend/node_modules/
