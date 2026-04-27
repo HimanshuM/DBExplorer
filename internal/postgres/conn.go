@@ -15,8 +15,12 @@ type Conn struct {
 }
 
 func NewConn(profile domain.ConnProfile) *Conn {
+	return NewConnWithJobEventEmitter(profile, nil)
+}
+
+func NewConnWithJobEventEmitter(profile domain.ConnProfile, emitter JobEventEmitter) *Conn {
 	sm := NewSessionManager(profile)
-	qr := NewQueryRunner(profile, sm)
+	qr := NewQueryRunner(profile, sm, WithJobEventEmitter(emitter))
 	return &Conn{profile: profile, sessionManager: sm, queryRunner: qr}
 }
 

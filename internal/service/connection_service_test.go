@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"testing"
 
@@ -13,6 +14,23 @@ import (
 type connectionTestFactory struct {
 	kind   domain.ConnectionKind
 	testFn func(context.Context, domain.ConnProfile, domain.SecretRef) (domain.ConnectionTestResult, error)
+}
+
+type recordingProfileStore struct {
+	profiles []domain.ConnProfile
+	err      error
+}
+
+func (s *recordingProfileStore) LoadProfiles(context.Context) (map[domain.ConnProfileID]domain.ConnProfile, error) {
+	return nil, nil
+}
+
+func (s *recordingProfileStore) SaveProfiles(_ context.Context, profiles []domain.ConnProfile) error {
+	s.profiles = append([]domain.ConnProfile(nil), profiles...)
+	if s.err != nil {
+		return s.err
+	}
+	return nil
 }
 
 func (f *connectionTestFactory) Kind() domain.ConnectionKind {
@@ -93,6 +111,35 @@ func TestConnectionServiceSaveProfileValidatesKindAndStoresProfile(t *testing.T)
 	}
 	if !reflect.DeepEqual(stored, profile) {
 		t.Fatalf("stored profile does not match saved profile: %+v", stored)
+	}
+}
+
+func TestConnectionServiceSaveProfilePersistsSortedSnapshot(t *testing.T) {
+	store := &recordingProfileStore{}
+	service := NewConnectionServiceWithStore(driver.NewRegistry(), map[domain.ConnProfileID]domain.ConnProfile{
+		"z_profile": {ID: "z_profile", Kind: domain.ConnectionKindPostgres},
+	}, store)
+
+	if err := service.SaveProfile(context.Background(), domain.ConnProfile{ID: "a_profile", Kind: domain.ConnectionKindPostgres}); err != nil {
+		t.Fatalf("SaveProfile returned error: %v", err)
+	}
+
+	if len(store.profiles) != 2 {
+		t.Fatalf("expected 2 persisted profiles, got %+v", store.profiles)
+	}
+	if store.profiles[0].ID != "a_profile" || store.profiles[1].ID != "z_profile" {
+		t.Fatalf("expected sorted persisted profiles, got %+v", store.profiles)
+	}
+}
+
+func TestConnectionServiceSaveProfileReturnsPersistenceError(t *testing.T) {
+	persistErr := fmt.Errorf("persist failed")
+	store := &recordingProfileStore{err: persistErr}
+	service := NewConnectionServiceWithStore(driver.NewRegistry(), map[domain.ConnProfileID]domain.ConnProfile{}, store)
+
+	err := service.SaveProfile(context.Background(), domain.ConnProfile{ID: "profile_1", Kind: domain.ConnectionKindPostgres})
+	if !errors.Is(err, persistErr) {
+		t.Fatalf("expected persistence error %v, got %v", persistErr, err)
 	}
 }
 

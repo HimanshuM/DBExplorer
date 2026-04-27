@@ -11,6 +11,13 @@ import {
 } from '../wailsjs/go/api/QueryAPI';
 import { ListProfiles, SaveProfile, TestConnection } from '../wailsjs/go/api/ConnectionAPI';
 import { domain } from '../wailsjs/go/models';
+import {
+  EventsOn,
+  Quit,
+  WindowIsMaximised,
+  WindowMinimise,
+  WindowToggleMaximise,
+} from '../wailsjs/runtime/runtime';
 
 const initialSQL = `select *
 from pg_catalog.pg_tables
@@ -31,6 +38,22 @@ type SQLExecutionTarget = {
   startOffset: number;
   endOffset: number;
   cursorEndOffset?: number;
+};
+
+type JobResultSetEvent = {
+  summary: domain.JobSummary;
+  schema: domain.ResultSchema;
+};
+
+type EditorTab = {
+  id: string;
+  title: string;
+  sql: string;
+  job: domain.JobSummary | null;
+  activeJobID: string;
+  result: ResultState;
+  running: boolean;
+  error: string;
 };
 
 type ProfileFormState = {
@@ -55,28 +78,151 @@ const defaultProfileForm: ProfileFormState = {
   sslMode: 'disable',
 };
 
+function createEditorTab(index: number): EditorTab {
+  return {
+    id: `query_${index}`,
+    title: `Query ${index}`,
+    sql: initialSQL,
+    job: null,
+    activeJobID: '',
+    result: { schema: null, rows: null },
+    running: false,
+    error: '',
+  };
+}
+
 export default function App() {
   const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null);
+  const tabsRef = useRef<EditorTab[]>([]);
+  const tabCounterRef = useRef(1);
+  const selectedProfileIDRef = useRef('');
+  const [tabs, setTabs] = useState<EditorTab[]>(() => [createEditorTab(1)]);
+  const [activeTabID, setActiveTabID] = useState('query_1');
   const [profiles, setProfiles] = useState<domain.ConnProfile[]>([]);
   const [selectedProfileID, setSelectedProfileID] = useState('');
-  const [sql, setSQL] = useState(initialSQL);
-  const [job, setJob] = useState<domain.JobSummary | null>(null);
-  const [activeJobID, setActiveJobID] = useState('');
-  const [result, setResult] = useState<ResultState>({ schema: null, rows: null });
   const [loadingProfiles, setLoadingProfiles] = useState(true);
-  const [running, setRunning] = useState(false);
-  const [error, setError] = useState('');
+  const [globalError, setGlobalError] = useState('');
   const [showProfileForm, setShowProfileForm] = useState(false);
   const [profileForm, setProfileForm] = useState<ProfileFormState>(defaultProfileForm);
   const [savingProfile, setSavingProfile] = useState(false);
   const [testingProfile, setTestingProfile] = useState(false);
   const [connectionMessage, setConnectionMessage] = useState('');
+  const [windowMaximized, setWindowMaximized] = useState(false);
   const handleRunRef = useRef<() => void>(() => {});
 
   const selectedProfile = useMemo(
     () => profiles.find((profile) => profile.id === selectedProfileID) ?? null,
     [profiles, selectedProfileID],
   );
+
+  const activeTab = useMemo(
+    () => tabs.find((tab) => tab.id === activeTabID) ?? tabs[0],
+    [activeTabID, tabs],
+  );
+
+  const visibleResult = activeTab?.result ?? { schema: null, rows: null };
+  const visibleError = activeTab?.error || activeTab?.job?.error?.message || globalError;
+  const status = activeTab?.job?.status ?? 'idle';
+
+  useEffect(() => {
+    tabsRef.current = tabs;
+  }, [tabs]);
+
+  useEffect(() => {
+    selectedProfileIDRef.current = selectedProfileID;
+  }, [selectedProfileID]);
+
+  useEffect(() => {
+    let canceled = false;
+
+    async function refreshWindowState() {
+      try {
+        const maximized = await WindowIsMaximised();
+        if (!canceled) {
+          setWindowMaximized(maximized);
+        }
+      } catch {
+        // Window state is cosmetic; ignore runtime lookup failures.
+      }
+    }
+
+    void refreshWindowState();
+    window.addEventListener('resize', refreshWindowState);
+
+    return () => {
+      canceled = true;
+      window.removeEventListener('resize', refreshWindowState);
+    };
+  }, []);
+
+  useEffect(() => {
+    function findTabByJobID(jobID: string) {
+      return tabsRef.current.find((tab) => tab.activeJobID === jobID || tab.job?.jobId === jobID);
+    }
+
+    function applyJobSummary(rawSummary: unknown) {
+      const summary = domain.JobSummary.createFrom(rawSummary);
+      const tab = findTabByJobID(summary.jobId);
+      if (!tab) {
+        return;
+      }
+
+      updateTab(tab.id, {
+        job: summary,
+        running: !terminalStatuses.has(summary.status),
+        activeJobID: terminalStatuses.has(summary.status) ? '' : tab.activeJobID,
+      });
+    }
+
+    function applyCompletedJob(rawSummary: unknown) {
+      const summary = domain.JobSummary.createFrom(rawSummary);
+      const tab = findTabByJobID(summary.jobId);
+      if (!tab) {
+        return;
+      }
+
+      updateTab(tab.id, {
+        job: summary,
+        running: false,
+        activeJobID: '',
+      });
+
+      if (summary.status === 'succeeded') {
+        void loadFirstResultPage(summary.profileId || selectedProfileIDRef.current, summary, tab.id);
+      }
+    }
+
+    function applyResultSet(rawEvent: unknown) {
+      const event = rawEvent as JobResultSetEvent;
+      const summary = domain.JobSummary.createFrom(event.summary);
+      const tab = findTabByJobID(summary.jobId);
+      if (!tab) {
+        return;
+      }
+
+      updateTab(tab.id, (current) => ({
+        ...current,
+        job: summary,
+        result: {
+          ...current.result,
+          schema: domain.ResultSchema.createFrom(event.schema),
+        },
+      }));
+    }
+
+    const unsubscribe = [
+      EventsOn('job:queued', applyJobSummary),
+      EventsOn('job:started', applyJobSummary),
+      EventsOn('job:resultset', applyResultSet),
+      EventsOn('job:completed', applyCompletedJob),
+      EventsOn('job:failed', applyCompletedJob),
+      EventsOn('job:canceled', applyCompletedJob),
+    ];
+
+    return () => {
+      unsubscribe.forEach((off) => off());
+    };
+  }, []);
 
   async function refreshProfiles(selectID?: string) {
     const nextProfiles = await ListProfiles();
@@ -90,7 +236,7 @@ export default function App() {
 
     async function loadProfiles() {
       setLoadingProfiles(true);
-      setError('');
+      setGlobalError('');
 
       try {
         const nextProfiles = await refreshProfiles();
@@ -103,7 +249,7 @@ export default function App() {
         }
       } catch (err) {
         if (!canceled) {
-          setError(formatError(err));
+          setGlobalError(formatError(err));
         }
       } finally {
         if (!canceled) {
@@ -119,58 +265,57 @@ export default function App() {
     };
   }, []);
 
-  useEffect(() => {
-    if (!activeJobID || !selectedProfileID) {
-      return;
-    }
-
-    let canceled = false;
-    let timer: number | undefined;
-
-    async function pollJob() {
-      try {
-        const nextJob = await GetJob(selectedProfileID, activeJobID);
-        if (canceled) {
-          return;
-        }
-
-        setJob(nextJob);
-        if (terminalStatuses.has(nextJob.status)) {
-          setRunning(false);
-          setActiveJobID('');
-
-          if (nextJob.status === 'succeeded') {
-            await loadFirstResultPage(selectedProfileID, nextJob);
-          }
-          return;
-        }
-
-        timer = window.setTimeout(pollJob, 350);
-      } catch (err) {
-        if (!canceled) {
-          setRunning(false);
-          setActiveJobID('');
-          setError(formatError(err));
-        }
-      }
-    }
-
-    timer = window.setTimeout(pollJob, 150);
-
-    return () => {
-      canceled = true;
-      if (timer !== undefined) {
-        window.clearTimeout(timer);
-      }
-    };
-  }, [activeJobID, selectedProfileID]);
-
   const handleEditorMount: OnMount = (mountedEditor) => {
     editorRef.current = mountedEditor;
     mountedEditor.addCommand(KeyMod.CtrlCmd | KeyCode.Enter, () => {
       handleRunRef.current();
     });
   };
+
+  function updateTab(tabID: string, patch: Partial<EditorTab> | ((tab: EditorTab) => EditorTab)) {
+    setTabs((current) =>
+      current.map((tab) => {
+        if (tab.id !== tabID) {
+          return tab;
+        }
+        return typeof patch === 'function' ? patch(tab) : { ...tab, ...patch };
+      }),
+    );
+  }
+
+  function updateActiveTabSQL(value: string) {
+    if (activeTab) {
+      updateTab(activeTab.id, { sql: value });
+    }
+  }
+
+  function addEditorTab() {
+    const nextIndex = tabCounterRef.current + 1;
+    tabCounterRef.current = nextIndex;
+    const nextTab = createEditorTab(nextIndex);
+    setTabs((current) => [...current, nextTab]);
+    setActiveTabID(nextTab.id);
+  }
+
+  function closeEditorTab(tabID: string) {
+    const tab = tabsRef.current.find((candidate) => candidate.id === tabID);
+    if (!tab || tab.running || tabsRef.current.length <= 1) {
+      return;
+    }
+
+    const remainingTabs = tabsRef.current.filter((candidate) => candidate.id !== tabID);
+    setTabs(remainingTabs);
+    if (activeTabID === tabID) {
+      setActiveTabID(remainingTabs[0]?.id ?? '');
+    }
+  }
+
+  async function handleToggleMaximize() {
+    WindowToggleMaximise();
+    window.setTimeout(() => {
+      void WindowIsMaximised().then(setWindowMaximized).catch(() => undefined);
+    }, 80);
+  }
 
   function updateProfileField<K extends keyof ProfileFormState>(
     field: K,
@@ -182,7 +327,7 @@ export default function App() {
   async function handleSaveProfile({ testAfterSave }: { testAfterSave: boolean }) {
     setSavingProfile(true);
     setConnectionMessage('');
-    setError('');
+    setGlobalError('');
 
     try {
       const profile = buildProfile(profileForm);
@@ -199,7 +344,7 @@ export default function App() {
         }
       }
     } catch (err) {
-      setError(formatError(err));
+      setGlobalError(formatError(err));
     } finally {
       setSavingProfile(false);
       setTestingProfile(false);
@@ -208,22 +353,33 @@ export default function App() {
 
   async function handleRun() {
     const profile = selectedProfile;
-    const target = getSQLExecutionTarget(editorRef.current, sql);
+    const tab = activeTab;
+    const target = getSQLExecutionTarget(editorRef.current, tab?.sql ?? '');
 
     if (!profile) {
-      setError('Select a connection profile before running a query.');
+      if (tab) {
+        updateTab(tab.id, { error: 'Select a connection profile before running a query.' });
+      }
       return;
     }
 
     if (!target.sql.trim()) {
-      setError('Enter a SQL statement before running.');
+      if (tab) {
+        updateTab(tab.id, { error: 'Enter a SQL statement before running.' });
+      }
       return;
     }
 
-    setError('');
-    setResult({ schema: null, rows: null });
-    setJob(null);
-    setRunning(true);
+    if (!tab) {
+      return;
+    }
+
+    updateTab(tab.id, {
+      error: '',
+      result: { schema: null, rows: null },
+      job: null,
+      running: true,
+    });
 
     try {
       const response = await RunQuery(domain.RunQueryRequest.createFrom({
@@ -241,41 +397,50 @@ export default function App() {
         readOnly: true,
       }));
 
-      setActiveJobID(response.jobId);
-      setJob(domain.JobSummary.createFrom({
-        jobId: response.jobId,
-        profileId: profile.id,
-        database: profile.database,
-        status: 'queued',
-        startedAt: 0,
-        endedAt: 0,
-        resultSets: [],
-      }));
+      updateTab(tab.id, {
+        activeJobID: response.jobId,
+        job: domain.JobSummary.createFrom({
+          jobId: response.jobId,
+          profileId: profile.id,
+          database: profile.database,
+          status: 'queued',
+          startedAt: 0,
+          endedAt: 0,
+          resultSets: [],
+        }),
+      });
     } catch (err) {
-      setRunning(false);
-      setError(formatError(err));
+      updateTab(tab.id, {
+        running: false,
+        error: formatError(err),
+      });
     }
   }
 
   handleRunRef.current = () => {
-    if (!running) {
+    if (!activeTab?.running) {
       void handleRun();
     }
   };
 
   async function handleCancel() {
-    if (!selectedProfileID || !activeJobID) {
+    const tab = activeTab;
+    if (!selectedProfileID || !tab?.activeJobID) {
       return;
     }
 
     try {
-      await CancelJob(selectedProfileID, activeJobID);
+      await CancelJob(selectedProfileID, tab.activeJobID);
     } catch (err) {
-      setError(formatError(err));
+      updateTab(tab.id, { error: formatError(err) });
     }
   }
 
-  async function loadFirstResultPage(profileID: string, completedJob: domain.JobSummary) {
+  async function loadFirstResultPage(
+    profileID: string,
+    completedJob: domain.JobSummary,
+    tabID: string,
+  ) {
     const resultSetID = completedJob.resultSets[0]?.resultSetId || 'rs_1';
 
     try {
@@ -292,74 +457,79 @@ export default function App() {
         })),
       ]);
 
-      setResult({ schema, rows });
+      updateTab(tabID, { result: { schema, rows } });
     } catch (err) {
-      setError(formatError(err));
+      updateTab(tabID, { error: formatError(err) });
     }
   }
 
-  const status = job?.status ?? 'idle';
+  useEffect(() => {
+    if (!tabs.some((tab) => tab.activeJobID)) {
+      return;
+    }
+
+    let canceled = false;
+
+    async function pollRunningJobs() {
+      const runningTabs = tabsRef.current.filter((tab) => tab.activeJobID);
+      await Promise.all(
+        runningTabs.map(async (tab) => {
+          try {
+            const nextJob = await GetJob(tab.job?.profileId || selectedProfileIDRef.current, tab.activeJobID);
+            if (canceled) {
+              return;
+            }
+
+            if (terminalStatuses.has(nextJob.status)) {
+              updateTab(tab.id, {
+                job: nextJob,
+                running: false,
+                activeJobID: '',
+              });
+
+              if (nextJob.status === 'succeeded') {
+                await loadFirstResultPage(nextJob.profileId, nextJob, tab.id);
+              }
+              return;
+            }
+
+            updateTab(tab.id, { job: nextJob, running: true });
+          } catch (err) {
+            if (!canceled) {
+              updateTab(tab.id, {
+                running: false,
+                activeJobID: '',
+                error: formatError(err),
+              });
+            }
+          }
+        }),
+      );
+    }
+
+    const interval = window.setInterval(() => {
+      void pollRunningJobs();
+    }, 1000);
+
+    return () => {
+      canceled = true;
+      window.clearInterval(interval);
+    };
+  }, [tabs]);
 
   return (
     <main className="app-shell">
-      <aside className="explorer-pane">
-        <header className="pane-header">
-          <span>Connections</span>
-          <button
-            type="button"
-            aria-label="Add connection"
-            onClick={() => setShowProfileForm((current) => !current)}
-          >
-            +
-          </button>
-        </header>
-        <div className="explorer-content">
-          {showProfileForm && (
-            <ConnectionForm
-              form={profileForm}
-              saving={savingProfile}
-              testing={testingProfile}
-              onChange={updateProfileField}
-              onSave={() => void handleSaveProfile({ testAfterSave: false })}
-              onTest={() => void handleSaveProfile({ testAfterSave: true })}
-            />
-          )}
-
-          {connectionMessage && <div className="message compact">{connectionMessage}</div>}
-
-          {loadingProfiles ? (
-            <div className="empty-tree">Loading profiles</div>
-          ) : profiles.length === 0 ? (
-            <div className="empty-tree">No saved connections</div>
-          ) : (
-            <div className="connection-list">
-              {profiles.map((profile) => (
-                <button
-                  type="button"
-                  key={profile.id}
-                  className={profile.id === selectedProfileID ? 'connection active' : 'connection'}
-                  onClick={() => setSelectedProfileID(profile.id)}
-                >
-                  <span>{profile.name || profile.id}</span>
-                  <small>{profile.database || profile.host}</small>
-                </button>
-              ))}
-            </div>
-          )}
+      <header className="app-titlebar">
+        <div className="titlebar-left">
+          <div className="app-title">DB Explorer</div>
         </div>
-      </aside>
-
-      <section className="workspace">
-        <header className="top-bar">
-          <div className="tab-strip">
-            <button type="button" className="tab active">Query 1</button>
-          </div>
+        <div className="titlebar-center titlebar-control">
           <label className="profile-picker">
             <span>Connection</span>
             <select
               value={selectedProfileID}
               onChange={(event) => setSelectedProfileID(event.target.value)}
-              disabled={running || profiles.length === 0}
+              disabled={activeTab?.running || profiles.length === 0}
             >
               {profiles.length === 0 ? (
                 <option value="">No profiles</option>
@@ -372,52 +542,170 @@ export default function App() {
               )}
             </select>
           </label>
-          <div className="toolbar">
-            <button type="button" onClick={handleRun} disabled={running || profiles.length === 0}>
-              Run
+        </div>
+        <div className="titlebar-right titlebar-control">
+          <div className="layout-controls" aria-label="Layout controls">
+            <button type="button" aria-label="Toggle left pane" title="Toggle left pane">
+              ◧
             </button>
-            <button type="button" onClick={handleCancel} disabled={!running || !activeJobID}>
-              Cancel
+            <button type="button" aria-label="Toggle right pane" title="Toggle right pane">
+              ◨
+            </button>
+            <button type="button" aria-label="Toggle bottom pane" title="Toggle bottom pane">
+              ▤
             </button>
           </div>
-        </header>
+          <div className="window-controls">
+            <button type="button" aria-label="Minimize window" onClick={WindowMinimise}>
+              -
+            </button>
+            <button
+              type="button"
+              aria-label={windowMaximized ? 'Restore window' : 'Maximize window'}
+              onClick={() => void handleToggleMaximize()}
+            >
+              {windowMaximized ? '❐' : '□'}
+            </button>
+            <button type="button" aria-label="Close window" className="window-close" onClick={Quit}>
+              x
+            </button>
+          </div>
+        </div>
+      </header>
 
-        <section className="editor-region">
-          <Editor
-            defaultLanguage="sql"
-            value={sql}
-            onChange={(value) => setSQL(value ?? '')}
-            onMount={handleEditorMount}
-            theme="vs-dark"
-            options={{
-              minimap: { enabled: false },
-              fontSize: 13,
-              fontFamily: 'JetBrains Mono, Menlo, Consolas, monospace',
-              scrollBeyondLastLine: false,
-              automaticLayout: true,
-              tabSize: 2,
-            }}
-          />
-        </section>
-
-        <section className="results-region">
+      <div className="app-body">
+        <aside className="explorer-pane">
           <header className="pane-header">
-            <span>{result.rows ? resultLabel(result.rows) : 'Results'}</span>
-            <span className={`status-pill ${status}`}>{status}</span>
-          </header>
-          {error ? (
-            <div className="message error">{error}</div>
-          ) : job?.error ? (
-            <div className="message error">{job.error.message}</div>
-          ) : result.schema && result.rows ? (
-            <ResultTable schema={result.schema} rows={result.rows} />
-          ) : (
-            <div className="result-placeholder">
-              {running ? 'Waiting for query results' : 'Result grid mount point'}
+            <span>Connections</span>
+            <button
+              type="button"
+              aria-label="Add connection"
+              onClick={() => setShowProfileForm((current) => !current)}
+            >
+              +
+            </button>
+        </header>
+          <div className="explorer-content">
+            {showProfileForm && (
+              <ConnectionForm
+                form={profileForm}
+                saving={savingProfile}
+                testing={testingProfile}
+                onChange={updateProfileField}
+                onSave={() => void handleSaveProfile({ testAfterSave: false })}
+                onTest={() => void handleSaveProfile({ testAfterSave: true })}
+              />
+            )}
+
+            {connectionMessage && <div className="message compact">{connectionMessage}</div>}
+
+            {loadingProfiles ? (
+              <div className="empty-tree">Loading profiles</div>
+            ) : profiles.length === 0 ? (
+              <div className="empty-tree">No saved connections</div>
+            ) : (
+              <div className="connection-list">
+                {profiles.map((profile) => (
+                  <button
+                    type="button"
+                    key={profile.id}
+                    className={profile.id === selectedProfileID ? 'connection active' : 'connection'}
+                    onClick={() => setSelectedProfileID(profile.id)}
+                  >
+                    <span>{profile.name || profile.id}</span>
+                    <small>{profile.database || profile.host}</small>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </aside>
+
+        <section className="workspace">
+          <header className="top-bar">
+            <div className="tab-strip">
+              {tabs.map((tab) => (
+                <button
+                  type="button"
+                  key={tab.id}
+                  className={tab.id === activeTab?.id ? 'tab active' : 'tab'}
+                  onClick={() => setActiveTabID(tab.id)}
+                >
+                  <span>{tab.title}</span>
+                  {tab.running && <span className="tab-dot" />}
+                  {tabs.length > 1 && (
+                    <span
+                      role="button"
+                      tabIndex={0}
+                      aria-label={`Close ${tab.title}`}
+                      className="tab-close"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        closeEditorTab(tab.id);
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter' || event.key === ' ') {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          closeEditorTab(tab.id);
+                        }
+                      }}
+                  >
+                    x
+                  </span>
+                  )}
+                </button>
+              ))}
+              <button type="button" className="new-tab" onClick={addEditorTab} aria-label="New query tab">
+                +
+              </button>
             </div>
-          )}
+            <div className="toolbar">
+              <button type="button" onClick={handleRun} disabled={activeTab?.running || profiles.length === 0}>
+                Run
+              </button>
+              <button type="button" onClick={handleCancel} disabled={!activeTab?.running || !activeTab.activeJobID}>
+                Cancel
+              </button>
+            </div>
+          </header>
+
+          <section className="editor-region">
+            <Editor
+              key={activeTab?.id}
+              defaultLanguage="sql"
+              value={activeTab?.sql ?? ''}
+              onChange={(value) => updateActiveTabSQL(value ?? '')}
+              onMount={handleEditorMount}
+              theme="vs-dark"
+              options={{
+                minimap: { enabled: false },
+                fontSize: 13,
+                fontFamily: 'JetBrains Mono, Menlo, Consolas, monospace',
+                scrollBeyondLastLine: false,
+                automaticLayout: true,
+                tabSize: 2,
+              }}
+            />
+          </section>
+
+          <section className="results-region">
+            <header className="pane-header">
+              <span>{visibleResult.rows ? resultLabel(visibleResult.rows) : 'Results'}</span>
+              <span className={`status-pill ${status}`}>{status}</span>
+            </header>
+            {visibleError ? (
+              <div className="message error">{visibleError}</div>
+            ) : visibleResult.schema && visibleResult.rows ? (
+              <ResultTable schema={visibleResult.schema} rows={visibleResult.rows} />
+            ) : (
+              <div className="result-placeholder">
+                {activeTab?.running ? 'Waiting for query results' : 'Result grid mount point'}
+              </div>
+            )}
+          </section>
         </section>
-      </section>
+      </div>
     </main>
   );
 }

@@ -1,8 +1,11 @@
 package main
 
 import (
+	"context"
 	"embed"
 	"log"
+	"os"
+	"path/filepath"
 
 	"dbx/internal/api"
 	"dbx/internal/domain"
@@ -19,12 +22,13 @@ var assets embed.FS
 
 func main() {
 	app := NewApp()
-	connectionAPI, queryAPI := buildAPIs()
+	connectionAPI, queryAPI := buildAPIs(app)
 
 	err := wails.Run(&options.App{
-		Title:  "DB Explorer",
-		Width:  1280,
-		Height: 820,
+		Title:     "DB Explorer",
+		Width:     1280,
+		Height:    820,
+		Frameless: true,
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 		},
@@ -40,15 +44,31 @@ func main() {
 	}
 }
 
-func buildAPIs() (*api.ConnectionAPI, *api.QueryAPI) {
+func buildAPIs(app *App) (*api.ConnectionAPI, *api.QueryAPI) {
 	registry := driver.NewRegistry()
-	if err := registry.Register(postgres.NewFactory()); err != nil {
+	if err := registry.Register(postgres.NewFactory(
+		postgres.WithFactoryJobEventEmitter(NewWailsJobEventEmitter(app)),
+	)); err != nil {
 		log.Fatal(err)
 	}
 
-	profiles := make(map[domain.ConnProfileID]domain.ConnProfile)
-	connectionService := service.NewConnectionService(registry, profiles)
+	profileStore := service.NewFileProfileStore(profileStorePath())
+	profiles, err := profileStore.LoadProfiles(context.Background())
+	if err != nil {
+		log.Printf("failed to load saved profiles: %v", err)
+		profiles = make(map[domain.ConnProfileID]domain.ConnProfile)
+	}
+
+	connectionService := service.NewConnectionServiceWithStore(registry, profiles, profileStore)
 	queryService := service.NewQueryService(registry, profiles)
 
 	return api.NewConnectionAPI(connectionService), api.NewQueryAPI(queryService)
+}
+
+func profileStorePath() string {
+	configDir, err := os.UserConfigDir()
+	if err != nil || configDir == "" {
+		return filepath.Join(".", "profiles.json")
+	}
+	return filepath.Join(configDir, "db-explorer", "profiles.json")
 }

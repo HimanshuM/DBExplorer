@@ -9,10 +9,24 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-type Factory struct{}
+type Factory struct {
+	jobEventEmitter JobEventEmitter
+}
 
-func NewFactory() *Factory {
-	return &Factory{}
+type FactoryOption func(*Factory)
+
+func NewFactory(opts ...FactoryOption) *Factory {
+	f := &Factory{}
+	for _, opt := range opts {
+		opt(f)
+	}
+	return f
+}
+
+func WithFactoryJobEventEmitter(emitter JobEventEmitter) FactoryOption {
+	return func(f *Factory) {
+		f.jobEventEmitter = emitter
+	}
 }
 
 func (f *Factory) Kind() domain.ConnectionKind {
@@ -37,7 +51,7 @@ func (f *Factory) Capabilities() driver.Capabilities {
 func (f *Factory) Open(ctx context.Context, profile domain.ConnProfile, secret domain.SecretRef) (driver.DriverConn, error) {
 	_ = ctx
 	_ = secret
-	return NewConn(profile), nil
+	return NewConnWithJobEventEmitter(profile, f.jobEventEmitter), nil
 }
 
 func (f *Factory) TestConnection(ctx context.Context, profile domain.ConnProfile, secret domain.SecretRef) (domain.ConnectionTestResult, error) {

@@ -28,6 +28,8 @@ type QueryRunner struct {
 	emitter        JobEventEmitter
 }
 
+type QueryRunnerOption func(*QueryRunner)
+
 type JobEventEmitter interface {
 	EmitQueued(ctx context.Context, summary domain.JobSummary)
 	EmitStarted(ctx context.Context, summary domain.JobSummary)
@@ -84,12 +86,27 @@ type jobHandle struct {
 	backendPID int
 }
 
-func NewQueryRunner(profile domain.ConnProfile, sm *SessionManager) *QueryRunner {
-	return &QueryRunner{
+func NewQueryRunner(profile domain.ConnProfile, sm *SessionManager, opts ...QueryRunnerOption) *QueryRunner {
+	qr := &QueryRunner{
 		profile:        profile,
 		sessionManager: sm,
 		registry:       NewJobRegistry(),
 		emitter:        noopJobEventEmitter{},
+	}
+	for _, opt := range opts {
+		opt(qr)
+	}
+	if qr.emitter == nil {
+		qr.emitter = noopJobEventEmitter{}
+	}
+	return qr
+}
+
+func WithJobEventEmitter(emitter JobEventEmitter) QueryRunnerOption {
+	return func(qr *QueryRunner) {
+		if emitter != nil {
+			qr.emitter = emitter
+		}
 	}
 }
 
