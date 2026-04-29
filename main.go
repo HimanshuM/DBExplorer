@@ -12,13 +12,18 @@ import (
 	"dbx/internal/driver"
 	"dbx/internal/postgres"
 	"dbx/internal/service"
+
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
+	"github.com/wailsapp/wails/v2/pkg/options/linux"
 )
 
 //go:embed all:frontend/dist
 var assets embed.FS
+
+//go:embed frontend/src/icons/app.svg
+var appIcon []byte
 
 func main() {
 	app := NewApp()
@@ -36,6 +41,9 @@ func main() {
 		),
 		AssetServer: &assetserver.Options{
 			Assets: assets,
+		},
+		Linux: &linux.Options{
+			Icon: appIcon,
 		},
 		OnStartup: app.startup,
 		Bind: []interface{}{

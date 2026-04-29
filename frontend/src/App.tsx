@@ -63,6 +63,8 @@ import {
   type ProfileFormState,
 } from './types';
 
+const appIconURL = new URL('./icons/app.svg', import.meta.url).href;
+
 type DatabaseOptionsState = {
   databases: string[];
   loading: boolean;
@@ -1058,7 +1060,7 @@ export default function App() {
     <main className="app-shell">
       <header className="app-titlebar">
         <div className="titlebar-left">
-          <div className="app-title">DB Explorer</div>
+          <img className="app-title-icon" src={appIconURL} alt="DB Explorer" />
         </div>
         <div className="titlebar-center titlebar-control titlebar-tabs">
           <div className="tab-strip">

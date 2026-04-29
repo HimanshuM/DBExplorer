@@ -72,7 +72,7 @@ select {
 
 .app-titlebar {
   display: grid;
-  grid-template-columns: minmax(130px, auto) minmax(0, 1fr) minmax(220px, auto);
+  grid-template-columns: minmax(34px, auto) minmax(0, 1fr) minmax(220px, auto);
   align-items: center;
   gap: 10px;
   min-width: 0;
@@ -100,11 +100,11 @@ select {
   gap: 8px;
 }
 
-.app-title {
-  min-width: max-content;
-  color: #d7dde8;
-  font-size: 13px;
-  font-weight: 700;
+.app-title-icon {
+  display: block;
+  width: 28px;
+  height: 28px;
+  object-fit: contain;
 }
 
 .titlebar-control,
