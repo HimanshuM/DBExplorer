@@ -28,6 +28,13 @@ export function ConnectionForm({
   onTest: () => void;
 }) {
   const busy = saving || testing;
+  const sslModeOptions = [
+    { value: 'disable', label: 'disable' },
+    { value: 'prefer', label: 'prefer' },
+    { value: 'require', label: 'require' },
+    { value: 'verify-ca', label: 'verify-ca' },
+    { value: 'verify-full', label: 'verify-full' },
+  ];
 
   return (
     <form className="connection-form" onSubmit={(event) => event.preventDefault()}>
@@ -93,17 +100,14 @@ export function ConnectionForm({
       </label>
       <label>
         <span>SSL Mode</span>
-        <select
+        <Select
+          options={sslModeOptions}
           value={form.sslMode}
-          onChange={(event) => onChange('sslMode', event.target.value)}
           disabled={busy}
-        >
-          <option value="disable">disable</option>
-          <option value="prefer">prefer</option>
-          <option value="require">require</option>
-          <option value="verify-ca">verify-ca</option>
-          <option value="verify-full">verify-full</option>
-        </select>
+          ariaLabel="SSL modes"
+          className="form-select-menu"
+          onChange={(value) => onChange('sslMode', value)}
+        />
       </label>
       <div className="form-actions">
         <button type="button" onClick={onTest} disabled={busy}>

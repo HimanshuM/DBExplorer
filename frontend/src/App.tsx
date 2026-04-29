@@ -872,24 +872,12 @@ export default function App() {
           <div className="app-title">DB Explorer</div>
         </div>
         <div className="titlebar-center titlebar-control">
-          <label className="profile-picker">
-            <span>Connection</span>
-            <select
-              value={selectedProfileID}
-              onChange={(event) => setSelectedProfileID(event.target.value)}
-              disabled={activeTab?.running || profiles.length === 0}
-            >
-              {profiles.length === 0 ? (
-                <option value="">No profiles</option>
-              ) : (
-                profiles.map((profile) => (
-                  <option key={profile.id} value={profile.id}>
-                    {profile.name || profile.id}
-                  </option>
-                ))
-              )}
-            </select>
-          </label>
+          <ConnectionDropdown
+            profiles={profiles}
+            selectedProfileID={activeProfileID}
+            disabled={connectionPickerDisabled}
+            onChange={updateActiveConnection}
+          />
         </div>
         <div className="titlebar-right titlebar-control">
           <div className="layout-controls" aria-label="Layout controls">
