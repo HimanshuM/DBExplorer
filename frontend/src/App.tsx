@@ -1024,11 +1024,11 @@ export default function App() {
             <button type="button" aria-label="Toggle left pane" title="Toggle left pane">
               <LeftPaneIcon size={16} strokeWidth={1.8} />
             </button>
-            <button type="button" aria-label="Toggle right pane" title="Toggle right pane">
-              <RightPaneIcon size={16} strokeWidth={1.8} />
-            </button>
             <button type="button" aria-label="Toggle bottom pane" title="Toggle bottom pane">
               <BottomPaneIcon size={16} strokeWidth={1.8} />
+            </button>
+            <button type="button" aria-label="Toggle right pane" title="Toggle right pane">
+              <RightPaneIcon size={16} strokeWidth={1.8} />
             </button>
           </div>
           <div className="window-controls">
