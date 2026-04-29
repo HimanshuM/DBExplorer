@@ -40,6 +40,7 @@ import { createEditorTab, terminalStatuses } from './queryTabs';
 import { ResultTable, resultLabel } from './resultTable';
 import { getSQLExecutionTarget } from './sqlSelection';
 import { StatusBar, collectRunningJobStatusItems } from './statusBar';
+import { ConnectionDropdown } from './connectionDropdown';
 import {
   type EditorTab,
   type ExplorerTreeNode,
@@ -73,11 +74,6 @@ export default function App() {
   const [statusPanelOpen, setStatusPanelOpen] = useState(false);
   const handleRunRef = useRef<() => void>(() => {});
 
-  const selectedProfile = useMemo(
-    () => profiles.find((profile) => profile.id === selectedProfileID) ?? null,
-    [profiles, selectedProfileID],
-  );
-
   const activeTab = useMemo(
     () => tabs.find((tab) => tab.id === activeTabID) ?? tabs[0],
     [activeTabID, tabs],
@@ -89,6 +85,13 @@ export default function App() {
   );
 
   const activeWorkspaceIsQuery = !activeObjectTab;
+  const activeProfileID = activeObjectTab?.node.profileID || activeTab?.profileID || selectedProfileID;
+
+  const selectedProfile = useMemo(
+    () => profiles.find((profile) => profile.id === activeProfileID) ?? null,
+    [activeProfileID, profiles],
+  );
+  const connectionPickerDisabled = !activeWorkspaceIsQuery || activeTab?.running || profiles.length === 0;
 
   const visibleResult = activeTab?.result ?? { schema: null, rows: null };
   const visibleError = activeTab?.error || activeTab?.job?.error?.message || globalError;
@@ -107,8 +110,8 @@ export default function App() {
   }, [objectTabs]);
 
   useEffect(() => {
-    selectedProfileIDRef.current = selectedProfileID;
-  }, [selectedProfileID]);
+    selectedProfileIDRef.current = activeProfileID;
+  }, [activeProfileID]);
 
   useEffect(() => {
     setExplorerNodes((current) =>
@@ -197,7 +200,7 @@ export default function App() {
         });
 
         if (summary.status === 'succeeded') {
-          void loadFirstResultPage(summary.profileId || selectedProfileIDRef.current, summary, tab.id);
+          void loadFirstResultPage(summary.profileId || tab.profileID || selectedProfileIDRef.current, summary, tab.id);
         }
         return;
       }
@@ -262,8 +265,19 @@ export default function App() {
 
   async function refreshProfiles(selectID?: string) {
     const nextProfiles = await ListProfiles();
+    const fallbackID = selectID || nextProfiles[0]?.id || '';
     setProfiles(nextProfiles);
-    setSelectedProfileID((current) => selectID || current || nextProfiles[0]?.id || '');
+    setSelectedProfileID((current) =>
+      selectID || (nextProfiles.some((profile) => profile.id === current) ? current : fallbackID),
+    );
+    setTabs((current) =>
+      current.map((tab) => {
+        if (nextProfiles.some((profile) => profile.id === tab.profileID)) {
+          return tab;
+        }
+        return { ...tab, profileID: fallbackID };
+      }),
+    );
     return nextProfiles;
   }
 
@@ -339,10 +353,17 @@ export default function App() {
     }
   }
 
+  function updateActiveConnection(profileID: string) {
+    setSelectedProfileID(profileID);
+    if (activeWorkspaceIsQuery && activeTab) {
+      updateTab(activeTab.id, { profileID });
+    }
+  }
+
   function addEditorTab() {
     const nextIndex = tabCounterRef.current + 1;
     tabCounterRef.current = nextIndex;
-    const nextTab = createEditorTab(nextIndex);
+    const nextTab = createEditorTab(nextIndex, activeProfileID);
     setTabs((current) => [...current, nextTab]);
     setActiveTabID(nextTab.id);
     setActiveWorkspaceTabID(nextTab.id);
@@ -487,7 +508,7 @@ export default function App() {
 
   async function handleCancel() {
     const tab = activeTab;
-    const cancelProfileID = tab?.job?.profileId || selectedProfileID;
+    const cancelProfileID = tab?.job?.profileId || tab?.profileID || activeProfileID;
     if (!cancelProfileID || !tab?.activeJobID) {
       return;
     }
@@ -503,7 +524,7 @@ export default function App() {
     setSelectedExplorerNodeID(node.id);
 
     if (node.kind === 'connection') {
-      setSelectedProfileID(node.profileID);
+      updateActiveConnection(node.profileID);
     }
 
     if (isInspectableExplorerObject(node)) {
@@ -787,7 +808,7 @@ export default function App() {
       await Promise.all(
         runningTabs.map(async (tab) => {
           try {
-            const nextJob = await GetJob(tab.job?.profileId || selectedProfileIDRef.current, tab.activeJobID);
+            const nextJob = await GetJob(tab.job?.profileId || tab.profileID || selectedProfileIDRef.current, tab.activeJobID);
             if (canceled) {
               return;
             }
@@ -942,7 +963,7 @@ export default function App() {
             ) : (
               <ExplorerTree
                 nodes={explorerNodes}
-                selectedProfileID={selectedProfileID}
+                selectedProfileID={activeProfileID}
                 selectedNodeID={selectedExplorerNodeID}
                 onNodeClick={(node) => void handleExplorerNodeClick(node)}
               />

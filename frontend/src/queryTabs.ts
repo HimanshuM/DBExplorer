@@ -8,10 +8,11 @@ limit 100;`;
 
 export const terminalStatuses = new Set(['succeeded', 'failed', 'canceled']);
 
-export function createEditorTab(index: number): EditorTab {
+export function createEditorTab(index: number, profileID = ''): EditorTab {
   return {
     id: `query_${index}`,
     title: `Query ${index}`,
+    profileID,
     sql: initialSQL,
     job: null,
     activeJobID: '',
