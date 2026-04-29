@@ -56,7 +56,6 @@ function ExplorerTreeNodeView({
         <span className={`explorer-icon ${node.kind}`}>{explorerNodeIcon(node.kind)}</span>
         <span className="explorer-label">
           <span>{node.label}</span>
-          {node.detail && <small>{node.detail}</small>}
         </span>
         {node.loading && <span className="explorer-loading">...</span>}
       </button>
