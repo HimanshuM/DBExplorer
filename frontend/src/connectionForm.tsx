@@ -1,8 +1,9 @@
 import { domain } from '../wailsjs/go/models';
+import { Select } from './components/Select';
 import { type ProfileFormState } from './types';
 
 export const defaultProfileForm: ProfileFormState = {
-  id: 'local_pg',
+  id: '',
   name: 'Local Postgres',
   host: 'localhost',
   port: '5432',
@@ -43,14 +44,6 @@ export function ConnectionForm({
         <input
           value={form.name}
           onChange={(event) => onChange('name', event.target.value)}
-          disabled={busy}
-        />
-      </label>
-      <label>
-        <span>ID</span>
-        <input
-          value={form.id}
-          onChange={(event) => onChange('id', event.target.value)}
           disabled={busy}
         />
       </label>
@@ -122,12 +115,9 @@ export function ConnectionForm({
 }
 
 export function buildProfile(form: ProfileFormState) {
-  const id = form.id.trim();
+  const id = form.id.trim() || createProfileID();
   const port = Number.parseInt(form.port, 10);
 
-  if (!id) {
-    throw new Error('Connection ID is required.');
-  }
   if (!form.name.trim()) {
     throw new Error('Connection name is required.');
   }
@@ -155,4 +145,11 @@ export function buildProfile(form: ProfileFormState) {
     sslMode: form.sslMode,
     options: form.password ? { password: form.password } : {},
   });
+}
+
+function createProfileID() {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+    return crypto.randomUUID();
+  }
+  return `conn_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
 }
