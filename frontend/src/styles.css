@@ -107,7 +107,7 @@ select {
 .layout-controls,
 .window-controls,
 .app-titlebar button,
-.app-titlebar select {
+.connection-menu {
   --wails-draggable: no-drag;
 }
 
@@ -200,8 +200,87 @@ select {
   font-weight: 500;
 }
 
-.app-titlebar .profile-picker select {
+.connection-menu {
+  position: relative;
   min-width: 280px;
+}
+
+.connection-menu-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  height: 30px;
+  padding: 0 8px 0 10px;
+  text-align: left;
+}
+
+.connection-menu-trigger span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  color: #d7dde8;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.connection-menu-chevron {
+  flex: 0 0 auto;
+  color: #8c98aa;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.connection-menu-list {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 20;
+  width: 100%;
+  max-height: 260px;
+  padding: 5px;
+  overflow-y: auto;
+  border: 1px solid #323946;
+  border-radius: 8px;
+  background: #171d26;
+  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.45), 0 2px 10px rgba(0, 0, 0, 0.35);
+}
+
+.connection-menu-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  height: 30px;
+  padding: 0 8px;
+  border-color: transparent;
+  background: transparent;
+  color: #cbd3df;
+  text-align: left;
+}
+
+.connection-menu-option:hover,
+.connection-menu-option:focus-visible {
+  background: #222a35;
+}
+
+.connection-menu-option.selected {
+  border-color: #3d4f66;
+  background: #243143;
+  color: #eef3fb;
+}
+
+.connection-menu-option span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.connection-menu-check {
+  flex: 0 0 auto;
+  color: #7db6ff;
 }
 
 .tab {
@@ -472,15 +551,15 @@ select {
   font-weight: 500;
 }
 
-.connection-form select {
-  width: 100%;
-  min-width: 0;
-}
-
 .form-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 74px;
   gap: 8px;
+}
+
+.form-select-menu {
+  width: 100%;
+  min-width: 0;
 }
 
 .form-actions {
@@ -788,7 +867,7 @@ th:first-child {
     display: none;
   }
 
-  .app-titlebar .profile-picker select {
+  .app-titlebar .connection-menu {
     min-width: 150px;
   }
 
