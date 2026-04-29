@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import Editor, { type OnMount } from '@monaco-editor/react';
+import Editor, { type BeforeMount, type OnMount } from '@monaco-editor/react';
 import type { editor } from 'monaco-editor';
 import { KeyCode, KeyMod } from 'monaco-editor';
 import {
@@ -314,6 +314,35 @@ export default function App() {
       canceled = true;
     };
   }, []);
+
+  const handleEditorBeforeMount: BeforeMount = (monaco) => {
+    monaco.editor.defineTheme('db-explorer-dark', {
+      base: 'vs-dark',
+      inherit: true,
+      rules: [],
+      colors: {
+        'editor.background': '#101318',
+        'editorGutter.background': '#101318',
+        'editorLineNumber.foreground': '#526070',
+        'editorLineNumber.activeForeground': '#9ba6b8',
+        'editorCursor.foreground': '#d7dde8',
+        'editor.selectionBackground': '#243143',
+        'editor.inactiveSelectionBackground': '#1c232d',
+        'editor.lineHighlightBackground': '#151a21',
+        'editorIndentGuide.background1': '#272d37',
+        'editorIndentGuide.activeBackground1': '#3d4f66',
+        'menu.background': '#171d26',
+        'menu.foreground': '#cbd3df',
+        'menu.selectionBackground': '#222a35',
+        'menu.selectionForeground': '#eef3fb',
+        'menu.separatorBackground': '#323946',
+        'menu.border': '#323946',
+        'editorWidget.background': '#171d26',
+        'editorWidget.foreground': '#cbd3df',
+        'editorWidget.border': '#323946',
+      },
+    });
+  };
 
   const handleEditorMount: OnMount = (mountedEditor) => {
     editorRef.current = mountedEditor;
@@ -1079,8 +1108,9 @@ export default function App() {
                 defaultLanguage="sql"
                 value={activeTab?.sql ?? ''}
                 onChange={(value) => updateActiveTabSQL(value ?? '')}
+                beforeMount={handleEditorBeforeMount}
                 onMount={handleEditorMount}
-                theme="vs-dark"
+                theme="db-explorer-dark"
                 options={{
                   minimap: { enabled: false },
                   fontSize: 13,
@@ -1118,4 +1148,3 @@ export default function App() {
     </main>
   );
 }
-
