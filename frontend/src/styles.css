@@ -247,6 +247,7 @@ button svg {
 
 .top-bar-connection {
   display: flex;
+  gap: 10px;
   justify-content: center;
   min-width: 0;
 }
@@ -265,9 +266,29 @@ button svg {
   font-weight: 500;
 }
 
+.profile-picker-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.profile-picker-icon.connection,
+.explorer-icon.connection {
+  color: #6ed0c4;
+}
+
+.profile-picker-icon.database,
+.explorer-icon.database {
+  color: #7fa7ff;
+}
+
 .connection-menu {
   position: relative;
-  min-width: 280px;
+  min-width: 180px;
+}
+
+.database-menu {
+  min-width: 180px;
 }
 
 .connection-menu-trigger {
@@ -983,8 +1004,9 @@ th:first-child {
     display: none;
   }
 
-  .top-bar .connection-menu {
-    min-width: 150px;
+  .top-bar .connection-menu,
+  .top-bar .database-menu {
+    min-width: 120px;
   }
 
   .app-titlebar {

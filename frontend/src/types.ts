@@ -22,6 +22,7 @@ export type EditorTab = {
   id: string;
   title: string;
   profileID: string;
+  database: string;
   sql: string;
   job: domain.JobSummary | null;
   activeJobID: string;

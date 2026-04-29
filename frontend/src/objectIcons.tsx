@@ -9,6 +9,7 @@ import {
   PanelBottom,
   PanelLeft,
   PanelRight,
+  Plug,
   Sigma,
   Table2,
 } from 'lucide-react';
@@ -18,6 +19,7 @@ import { type ExplorerTreeNodeKind } from './types';
 export function iconForExplorerKind(kind: ExplorerTreeNodeKind): LucideIcon {
   switch (kind) {
     case 'connection':
+      return Plug;
     case 'database':
       return Database;
     case 'schema':

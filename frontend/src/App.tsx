@@ -53,7 +53,7 @@ import { createEditorTab, terminalStatuses } from './queryTabs';
 import { ResultTable, resultLabel } from './resultTable';
 import { getSQLExecutionTarget } from './sqlSelection';
 import { StatusBar, collectRunningJobStatusItems } from './statusBar';
-import { ConnectionDropdown } from './connectionDropdown';
+import { ConnectionDropdown, DatabaseDropdown } from './connectionDropdown';
 import { LayoutIcons, iconForObjectTabKind } from './objectIcons';
 import {
   type EditorTab,
@@ -62,6 +62,26 @@ import {
   type ObjectInfoTab,
   type ProfileFormState,
 } from './types';
+
+type DatabaseOptionsState = {
+  databases: string[];
+  loading: boolean;
+  error: string;
+};
+
+function uniqueStrings(values: string[]) {
+  return Array.from(new Set(values.filter(Boolean)));
+}
+
+function preferredDatabase(current: string, profileDatabase: string, databases: string[]) {
+  if (current && (databases.length === 0 || databases.includes(current))) {
+    return current;
+  }
+  if (profileDatabase && (databases.length === 0 || databases.includes(profileDatabase))) {
+    return profileDatabase;
+  }
+  return databases[0] ?? profileDatabase ?? current;
+}
 
 export default function App() {
   const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null);
@@ -86,6 +106,7 @@ export default function App() {
   const [explorerNodes, setExplorerNodes] = useState<ExplorerTreeNode[]>([]);
   const [selectedExplorerNodeID, setSelectedExplorerNodeID] = useState('');
   const [statusPanelOpen, setStatusPanelOpen] = useState(false);
+  const [databaseOptionsByProfileID, setDatabaseOptionsByProfileID] = useState<Record<string, DatabaseOptionsState>>({});
   const handleRunRef = useRef<() => void>(() => { });
 
   const activeTab = useMemo(
@@ -106,6 +127,17 @@ export default function App() {
     [activeProfileID, profiles],
   );
   const connectionPickerDisabled = !activeWorkspaceIsQuery || activeTab?.running || profiles.length === 0;
+  const databaseOptionsState = activeProfileID ? databaseOptionsByProfileID[activeProfileID] : undefined;
+  const selectedDatabase = activeObjectTab?.node.database || activeTab?.database || selectedProfile?.database || '';
+  const databaseOptions = useMemo(() => {
+    const databaseNames = databaseOptionsState?.databases ?? [];
+    return uniqueStrings([selectedDatabase, selectedProfile?.database ?? '', ...databaseNames]);
+  }, [databaseOptionsState?.databases, selectedDatabase, selectedProfile?.database]);
+  const databasePickerDisabled =
+    connectionPickerDisabled ||
+    !activeProfileID ||
+    (databaseOptionsState?.loading && databaseOptions.length === 0) ||
+    databaseOptions.length === 0;
 
   const visibleResult = activeTab?.result ?? { schema: null, rows: null };
   const visibleError = activeTab?.error || activeTab?.job?.error?.message || globalError;
@@ -126,6 +158,59 @@ export default function App() {
   useEffect(() => {
     selectedProfileIDRef.current = activeProfileID;
   }, [activeProfileID]);
+
+  useEffect(() => {
+    if (!activeWorkspaceIsQuery || !activeProfileID || databaseOptionsByProfileID[activeProfileID]?.loading) {
+      return;
+    }
+
+    let canceled = false;
+    setDatabaseOptionsByProfileID((current) => ({
+      ...current,
+      [activeProfileID]: {
+        databases: current[activeProfileID]?.databases ?? [],
+        loading: true,
+        error: '',
+      },
+    }));
+
+    async function loadDatabases() {
+      try {
+        const databases = await ListExplorerDatabases(activeProfileID);
+        if (canceled) {
+          return;
+        }
+
+        const databaseNames = databases.map((database) => database.name);
+        const profileDatabase = profiles.find((profile) => profile.id === activeProfileID)?.database ?? '';
+        const fallbackDatabase = preferredDatabase(activeTab?.database ?? '', profileDatabase, databaseNames);
+        setDatabaseOptionsByProfileID((current) => ({
+          ...current,
+          [activeProfileID]: { databases: databaseNames, loading: false, error: '' },
+        }));
+        if (activeTab && fallbackDatabase !== activeTab.database) {
+          updateTab(activeTab.id, { database: fallbackDatabase });
+        }
+      } catch (err) {
+        if (!canceled) {
+          setDatabaseOptionsByProfileID((current) => ({
+            ...current,
+            [activeProfileID]: {
+              databases: current[activeProfileID]?.databases ?? [],
+              loading: false,
+              error: formatError(err),
+            },
+          }));
+        }
+      }
+    }
+
+    void loadDatabases();
+
+    return () => {
+      canceled = true;
+    };
+  }, [activeWorkspaceIsQuery, activeProfileID]);
 
   useEffect(() => {
     setExplorerNodes((current) =>
@@ -280,16 +365,18 @@ export default function App() {
   async function refreshProfiles(selectID?: string) {
     const nextProfiles = await ListProfiles();
     const fallbackID = selectID || nextProfiles[0]?.id || '';
+    const fallbackProfile = nextProfiles.find((profile) => profile.id === fallbackID);
     setProfiles(nextProfiles);
     setSelectedProfileID((current) =>
       selectID || (nextProfiles.some((profile) => profile.id === current) ? current : fallbackID),
     );
     setTabs((current) =>
       current.map((tab) => {
-        if (nextProfiles.some((profile) => profile.id === tab.profileID)) {
-          return tab;
+        const profile = nextProfiles.find((candidate) => candidate.id === tab.profileID);
+        if (profile) {
+          return { ...tab, database: tab.database || profile.database };
         }
-        return { ...tab, profileID: fallbackID };
+        return { ...tab, profileID: fallbackID, database: fallbackProfile?.database ?? '' };
       }),
     );
     return nextProfiles;
@@ -415,16 +502,25 @@ export default function App() {
   }
 
   function updateActiveConnection(profileID: string) {
+    const profile = profiles.find((candidate) => candidate.id === profileID);
+    const databaseNames = databaseOptionsByProfileID[profileID]?.databases ?? [];
+    const database = preferredDatabase('', profile?.database ?? '', databaseNames);
     setSelectedProfileID(profileID);
     if (activeWorkspaceIsQuery && activeTab) {
-      updateTab(activeTab.id, { profileID });
+      updateTab(activeTab.id, { profileID, database });
+    }
+  }
+
+  function updateActiveDatabase(database: string) {
+    if (activeWorkspaceIsQuery && activeTab) {
+      updateTab(activeTab.id, { database });
     }
   }
 
   function addEditorTab() {
     const nextIndex = tabCounterRef.current + 1;
     tabCounterRef.current = nextIndex;
-    const nextTab = createEditorTab(nextIndex, activeProfileID);
+    const nextTab = createEditorTab(nextIndex, activeProfileID, selectedDatabase);
     setTabs((current) => [...current, nextTab]);
     setActiveTabID(nextTab.id);
     setActiveWorkspaceTabID(nextTab.id);
@@ -518,6 +614,13 @@ export default function App() {
       return;
     }
 
+    const database = tab.database || profile.database;
+
+    if (!database) {
+      updateTab(tab.id, { error: 'Select a database before running a query.' });
+      return;
+    }
+
     updateTab(tab.id, {
       error: '',
       result: { schema: null, rows: null },
@@ -528,7 +631,7 @@ export default function App() {
     try {
       const response = await RunQuery(domain.RunQueryRequest.createFrom({
         profileId: profile.id,
-        database: profile.database,
+        database,
         sql: target.sql,
         statements: [
           {
@@ -546,7 +649,7 @@ export default function App() {
         job: domain.JobSummary.createFrom({
           jobId: response.jobId,
           profileId: profile.id,
-          database: profile.database,
+          database,
           status: 'queued',
           startedAt: 0,
           endedAt: 0,
@@ -1147,6 +1250,14 @@ export default function App() {
                 disabled={connectionPickerDisabled}
                 onChange={updateActiveConnection}
               />
+              <DatabaseDropdown
+                databases={databaseOptions}
+                selectedDatabase={selectedDatabase}
+                disabled={databasePickerDisabled}
+                loading={databaseOptionsState?.loading ?? false}
+                error={databaseOptionsState?.error ?? ''}
+                onChange={updateActiveDatabase}
+              />
             </div>
             <div className="top-bar-spacer" />
           </header>
@@ -1175,6 +1286,7 @@ export default function App() {
                 options={{
                   minimap: { enabled: false },
                   fontSize: 13,
+                  lineHeight: 22,
                   fontFamily: 'JetBrains Mono, Menlo, Consolas, monospace',
                   scrollBeyondLastLine: false,
                   automaticLayout: true,
