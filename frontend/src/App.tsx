@@ -1,5 +1,17 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import Editor, { type BeforeMount, type OnMount } from '@monaco-editor/react';
+import {
+  ChevronsDownUp,
+  Copy,
+  FileCode2,
+  Maximize2,
+  Minus,
+  Play,
+  Plus,
+  Square,
+  SquareStack,
+  X,
+} from 'lucide-react';
 import type { editor } from 'monaco-editor';
 import { KeyCode, KeyMod } from 'monaco-editor';
 import {
@@ -26,6 +38,7 @@ import {
 } from '../wailsjs/runtime/runtime';
 import { ConnectionForm, buildProfile, defaultProfileForm } from './connectionForm';
 import {
+  collapseExplorerNodes,
   ExplorerTree,
   explorerNodeID,
   groupExplorerObjects,
@@ -41,6 +54,7 @@ import { ResultTable, resultLabel } from './resultTable';
 import { getSQLExecutionTarget } from './sqlSelection';
 import { StatusBar, collectRunningJobStatusItems } from './statusBar';
 import { ConnectionDropdown } from './connectionDropdown';
+import { LayoutIcons, iconForObjectTabKind } from './objectIcons';
 import {
   type EditorTab,
   type ExplorerTreeNode,
@@ -72,7 +86,7 @@ export default function App() {
   const [explorerNodes, setExplorerNodes] = useState<ExplorerTreeNode[]>([]);
   const [selectedExplorerNodeID, setSelectedExplorerNodeID] = useState('');
   const [statusPanelOpen, setStatusPanelOpen] = useState(false);
-  const handleRunRef = useRef<() => void>(() => {});
+  const handleRunRef = useRef<() => void>(() => { });
 
   const activeTab = useMemo(
     () => tabs.find((tab) => tab.id === activeTabID) ?? tabs[0],
@@ -572,7 +586,7 @@ export default function App() {
     if (!existing) {
       const tab: ObjectInfoTab = {
         id: tabID,
-        title: `${objectKindLabel(node.kind)}: ${node.objectName ?? node.label}`,
+        title: node.objectName ?? node.label,
         node,
         section: 'overview',
         state: { loading: true, error: '', info: null },
@@ -915,45 +929,121 @@ export default function App() {
     };
   }, [tabs, objectTabs]);
 
+  const LeftPaneIcon = LayoutIcons.left;
+  const RightPaneIcon = LayoutIcons.right;
+  const BottomPaneIcon = LayoutIcons.bottom;
+
   return (
     <main className="app-shell">
       <header className="app-titlebar">
         <div className="titlebar-left">
           <div className="app-title">DB Explorer</div>
         </div>
-        <div className="titlebar-center titlebar-control">
-          <ConnectionDropdown
-            profiles={profiles}
-            selectedProfileID={activeProfileID}
-            disabled={connectionPickerDisabled}
-            onChange={updateActiveConnection}
-          />
+        <div className="titlebar-center titlebar-control titlebar-tabs">
+          <div className="tab-strip">
+            {tabs.map((tab) => (
+              <button
+                type="button"
+                key={tab.id}
+                title={tab.title}
+                className={tab.id === activeWorkspaceTabID ? 'tab active' : 'tab'}
+                onClick={() => {
+                  setActiveTabID(tab.id);
+                  setActiveWorkspaceTabID(tab.id);
+                }}
+              >
+                <span className="tab-icon"><FileCode2 size={15} strokeWidth={1.8} /></span>
+                <span>{tab.title}</span>
+                {tab.running && <span className="tab-dot" />}
+                {tabs.length > 1 && (
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    aria-label={`Close ${tab.title}`}
+                    className="tab-close"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      closeEditorTab(tab.id);
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        closeEditorTab(tab.id);
+                      }
+                    }}
+                  >
+                    <X size={13} strokeWidth={2} />
+                  </span>
+                )}
+              </button>
+            ))}
+            {objectTabs.map((tab) => {
+              const Icon = iconForObjectTabKind(tab.node.kind);
+              const tooltip = `${tab.title} (${objectKindLabel(tab.node.kind).toLowerCase()})`;
+              return (
+                <button
+                  type="button"
+                  key={tab.id}
+                  title={tooltip}
+                  className={tab.id === activeWorkspaceTabID ? 'tab active object-tab' : 'tab object-tab'}
+                  onClick={() => setActiveWorkspaceTabID(tab.id)}
+                >
+                  <span className={`tab-icon ${tab.node.kind}`}><Icon size={15} strokeWidth={1.8} /></span>
+                  <span>{tab.title}</span>
+                  {tab.dataRunning && <span className="tab-dot" />}
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    aria-label={`Close ${tab.title}`}
+                    className="tab-close"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      closeObjectTab(tab.id);
+                    }}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        closeObjectTab(tab.id);
+                      }
+                    }}
+                  >
+                    <X size={13} strokeWidth={2} />
+                  </span>
+                </button>
+              );
+            })}
+            <button type="button" className="new-tab" onClick={addEditorTab} aria-label="New query tab">
+              <Plus size={16} strokeWidth={2} />
+            </button>
+          </div>
         </div>
         <div className="titlebar-right titlebar-control">
           <div className="layout-controls" aria-label="Layout controls">
             <button type="button" aria-label="Toggle left pane" title="Toggle left pane">
-              ◧
+              <LeftPaneIcon size={16} strokeWidth={1.8} />
             </button>
             <button type="button" aria-label="Toggle right pane" title="Toggle right pane">
-              ◨
+              <RightPaneIcon size={16} strokeWidth={1.8} />
             </button>
             <button type="button" aria-label="Toggle bottom pane" title="Toggle bottom pane">
-              ▤
+              <BottomPaneIcon size={16} strokeWidth={1.8} />
             </button>
           </div>
           <div className="window-controls">
             <button type="button" aria-label="Minimize window" onClick={WindowMinimise}>
-              -
+              <Minus size={15} strokeWidth={2} />
             </button>
             <button
               type="button"
               aria-label={windowMaximized ? 'Restore window' : 'Maximize window'}
               onClick={() => void handleToggleMaximize()}
             >
-              {windowMaximized ? '❐' : '□'}
+              {windowMaximized ? <Copy size={15} strokeWidth={1.8} style={{ transform: 'scaleX(-1)' }} /> : <Square size={15} strokeWidth={1.8} />}
             </button>
             <button type="button" aria-label="Close window" className="window-close" onClick={Quit}>
-              x
+              <X size={15} strokeWidth={2} />
             </button>
           </div>
         </div>
@@ -963,14 +1053,26 @@ export default function App() {
         <aside className="explorer-pane">
           <header className="pane-header">
             <span>Connections</span>
-            <button
-              type="button"
-              aria-label="Add connection"
-              onClick={() => setShowProfileForm((current) => !current)}
-            >
-              +
-            </button>
-        </header>
+            <div className="pane-header-actions">
+              <button
+                type="button"
+                aria-label="Collapse all"
+                title="Collapse all"
+                onClick={() => setExplorerNodes((current) => collapseExplorerNodes(current))}
+                disabled={explorerNodes.length === 0}
+              >
+                <ChevronsDownUp size={15} strokeWidth={2} />
+              </button>
+              <button
+                type="button"
+                aria-label="Add connection"
+                title="Add connection"
+                onClick={() => setShowProfileForm((current) => !current)}
+              >
+                <Plus size={15} strokeWidth={2} />
+              </button>
+            </div>
+          </header>
           <div className="explorer-content">
             {showProfileForm && (
               <ConnectionForm
@@ -1002,92 +1104,33 @@ export default function App() {
 
         <section className="workspace">
           <header className="top-bar">
-            <div className="tab-strip">
-              {tabs.map((tab) => (
-                <button
-                  type="button"
-                  key={tab.id}
-                  className={tab.id === activeWorkspaceTabID ? 'tab active' : 'tab'}
-                  onClick={() => {
-                    setActiveTabID(tab.id);
-                    setActiveWorkspaceTabID(tab.id);
-                  }}
-                >
-                  <span>{tab.title}</span>
-                  {tab.running && <span className="tab-dot" />}
-                  {tabs.length > 1 && (
-                    <span
-                      role="button"
-                      tabIndex={0}
-                      aria-label={`Close ${tab.title}`}
-                      className="tab-close"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        closeEditorTab(tab.id);
-                      }}
-                      onKeyDown={(event) => {
-                        if (event.key === 'Enter' || event.key === ' ') {
-                          event.preventDefault();
-                          event.stopPropagation();
-                          closeEditorTab(tab.id);
-                        }
-                      }}
-                  >
-                    x
-                  </span>
-                  )}
-                </button>
-              ))}
-              {objectTabs.map((tab) => (
-                <button
-                  type="button"
-                  key={tab.id}
-                  className={tab.id === activeWorkspaceTabID ? 'tab active object-tab' : 'tab object-tab'}
-                  onClick={() => setActiveWorkspaceTabID(tab.id)}
-                >
-                  <span>{tab.title}</span>
-                  {tab.dataRunning && <span className="tab-dot" />}
-                  <span
-                    role="button"
-                    tabIndex={0}
-                    aria-label={`Close ${tab.title}`}
-                    className="tab-close"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      closeObjectTab(tab.id);
-                    }}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Enter' || event.key === ' ') {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        closeObjectTab(tab.id);
-                      }
-                    }}
-                  >
-                    x
-                  </span>
-                </button>
-              ))}
-              <button type="button" className="new-tab" onClick={addEditorTab} aria-label="New query tab">
-                +
-              </button>
-            </div>
             <div className="toolbar">
               <button
                 type="button"
                 onClick={handleRun}
                 disabled={!activeWorkspaceIsQuery || activeTab?.running || profiles.length === 0}
               >
-                Run
+                <Play size={15} strokeWidth={2} />
+                <span>Run</span>
               </button>
               <button
                 type="button"
                 onClick={handleCancel}
                 disabled={!activeWorkspaceIsQuery || !activeTab?.running || !activeTab.activeJobID}
               >
-                Cancel
+                <Square size={14} strokeWidth={2} />
+                <span>Cancel</span>
               </button>
             </div>
+            <div className="top-bar-connection">
+              <ConnectionDropdown
+                profiles={profiles}
+                selectedProfileID={activeProfileID}
+                disabled={connectionPickerDisabled}
+                onChange={updateActiveConnection}
+              />
+            </div>
+            <div className="top-bar-spacer" />
           </header>
 
           <section className="editor-region">

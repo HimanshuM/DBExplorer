@@ -1,4 +1,6 @@
+import { ChevronDown, ChevronRight, LoaderCircle } from 'lucide-react';
 import { domain } from '../wailsjs/go/models';
+import { iconForExplorerKind } from './objectIcons';
 import { type ExplorerTreeNode, type ExplorerTreeNodeKind } from './types';
 
 export function ExplorerTree({
@@ -43,6 +45,7 @@ function ExplorerTreeNodeView({
 }) {
   const canExpand = canExpandExplorerNode(node);
   const active = node.id === selectedNodeID || (node.kind === 'connection' && node.profileID === selectedProfileID);
+  const Icon = iconForExplorerKind(node.kind);
 
   return (
     <div className="explorer-tree-item">
@@ -52,12 +55,21 @@ function ExplorerTreeNodeView({
         style={{ paddingLeft: 8 + depth * 14 }}
         onClick={() => onNodeClick(node)}
       >
-        <span className="explorer-toggle">{canExpand ? (node.expanded ? '▾' : '▸') : ''}</span>
-        <span className={`explorer-icon ${node.kind}`}>{explorerNodeIcon(node.kind)}</span>
+        <span className="explorer-toggle">
+          {node.loading ? (
+            <LoaderCircle size={14} strokeWidth={2} />
+          ) : canExpand ? (
+            node.expanded ? (
+              <ChevronDown size={14} strokeWidth={2} />
+            ) : (
+              <ChevronRight size={14} strokeWidth={2} />
+            )
+          ) : null}
+        </span>
+        <span className={`explorer-icon ${node.kind}`}><Icon size={15} strokeWidth={1.8} /></span>
         <span className="explorer-label">
           <span>{node.label}</span>
         </span>
-        {node.loading && <span className="explorer-loading">...</span>}
       </button>
       {node.error && <div className="explorer-error">{node.error}</div>}
       {node.expanded &&
@@ -89,6 +101,14 @@ export function updateExplorerNodeList(
     }
     return { ...node, children: updateExplorerNodeList(node.children, nodeID, updater) };
   });
+}
+
+export function collapseExplorerNodes(nodes: ExplorerTreeNode[]): ExplorerTreeNode[] {
+  return nodes.map((node) => ({
+    ...node,
+    expanded: false,
+    children: node.children.length > 0 ? collapseExplorerNodes(node.children) : node.children,
+  }));
 }
 
 export function groupExplorerObjects(
@@ -173,29 +193,4 @@ export function objectInfoTabID(node: ExplorerTreeNode) {
 
 function canExpandExplorerNode(node: ExplorerTreeNode) {
   return ['connection', 'database', 'schema', 'group'].includes(node.kind);
-}
-
-function explorerNodeIcon(kind: ExplorerTreeNodeKind) {
-  switch (kind) {
-    case 'connection':
-      return '●';
-    case 'database':
-      return 'DB';
-    case 'schema':
-      return '{}';
-    case 'group':
-      return '▣';
-    case 'table':
-      return 'T';
-    case 'view':
-      return 'V';
-    case 'materialized_view':
-      return 'MV';
-    case 'sequence':
-      return '#';
-    case 'function':
-      return 'F';
-    default:
-      return '';
-  }
 }

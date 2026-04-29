@@ -1,3 +1,4 @@
+import { Check, ChevronDown } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 export type Option = {
@@ -69,7 +70,7 @@ export function Select({
         }}
       >
         <span>{selectedLabel}</span>
-        <span className="connection-menu-chevron">⌄</span>
+        <span className="connection-menu-chevron"><ChevronDown size={14} strokeWidth={2} /></span>
       </button>
       {open && (
         <div className="connection-menu-list" role="listbox" aria-label={ariaLabel}>
@@ -85,7 +86,11 @@ export function Select({
                 onClick={() => selectValue(option.value)}
               >
                 <span>{option.label}</span>
-                {selected && <span className="connection-menu-check">✓</span>}
+                {selected && (
+                  <span className="connection-menu-check">
+                    <Check size={14} strokeWidth={2} />
+                  </span>
+                )}
               </button>
             );
           })}
