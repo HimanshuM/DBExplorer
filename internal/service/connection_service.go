@@ -73,12 +73,34 @@ func (s *ConnectionService) SaveProfile(ctx context.Context, profile domain.Conn
 	return nil
 }
 
+func (s *ConnectionService) DeleteProfile(ctx context.Context, profileID domain.ConnProfileID) error {
+	s.mu.Lock()
+	if _, ok := s.profiles[profileID]; !ok {
+		s.mu.Unlock()
+		return fmt.Errorf("profile %q not found", profileID)
+	}
+	delete(s.profiles, profileID)
+	profiles := s.snapshotProfilesLocked()
+	s.mu.Unlock()
+
+	if s.profileStore != nil {
+		if err := s.profileStore.SaveProfiles(ctx, profiles); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (s *ConnectionService) TestConnection(ctx context.Context, profileID domain.ConnProfileID) (domain.ConnectionTestResult, error) {
 	profile, err := s.GetProfile(ctx, profileID)
 	if err != nil {
 		return domain.ConnectionTestResult{}, err
 	}
 
+	return s.TestConnectionProfile(ctx, profile)
+}
+
+func (s *ConnectionService) TestConnectionProfile(ctx context.Context, profile domain.ConnProfile) (domain.ConnectionTestResult, error) {
 	factory, ok := s.registry.Get(profile.Kind)
 	if !ok {
 		return domain.ConnectionTestResult{}, fmt.Errorf("no driver registered for kind %q", profile.Kind)

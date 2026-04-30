@@ -44,13 +44,18 @@ func TestConnectionAPIDelegatesToService(t *testing.T) {
 		"a": {ID: "a", Kind: domain.ConnectionKindPostgres, Name: "Alpha"},
 	}
 	expectedTestResult := domain.ConnectionTestResult{OK: true, Message: "ok"}
+	expectedProfileTests := []domain.ConnProfileID{"a", "unsaved"}
 
 	if err := registry.Register(&apiConnectionFactory{
 		kind: domain.ConnectionKindPostgres,
 		testFn: func(_ context.Context, profile domain.ConnProfile, secret domain.SecretRef) (domain.ConnectionTestResult, error) {
-			if profile.ID != "a" {
-				t.Fatalf("expected profile a, got %q", profile.ID)
+			if len(expectedProfileTests) == 0 {
+				t.Fatalf("unexpected profile test for %q", profile.ID)
 			}
+			if profile.ID != expectedProfileTests[0] {
+				t.Fatalf("expected profile %q, got %q", expectedProfileTests[0], profile.ID)
+			}
+			expectedProfileTests = expectedProfileTests[1:]
 			if secret != (domain.SecretRef{}) {
 				t.Fatalf("expected empty secret, got %+v", secret)
 			}
@@ -95,5 +100,20 @@ func TestConnectionAPIDelegatesToService(t *testing.T) {
 	}
 	if testResult != expectedTestResult {
 		t.Fatalf("unexpected test connection result: %+v", testResult)
+	}
+
+	unsavedTestResult, err := api.TestConnectionProfile(domain.ConnProfile{ID: "unsaved", Kind: domain.ConnectionKindPostgres})
+	if err != nil {
+		t.Fatalf("TestConnectionProfile returned error: %v", err)
+	}
+	if unsavedTestResult != expectedTestResult {
+		t.Fatalf("unexpected unsaved test connection result: %+v", unsavedTestResult)
+	}
+
+	if err := api.DeleteProfile("c"); err != nil {
+		t.Fatalf("DeleteProfile returned error: %v", err)
+	}
+	if _, err := api.GetProfile("c"); err == nil {
+		t.Fatal("expected deleted profile lookup to fail")
 	}
 }

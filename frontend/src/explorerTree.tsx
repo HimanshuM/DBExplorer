@@ -1,4 +1,5 @@
 import { ChevronDown, ChevronRight, LoaderCircle } from 'lucide-react';
+import type React from 'react';
 import { domain } from '../wailsjs/go/models';
 import { iconForExplorerKind } from './objectIcons';
 import { type ExplorerTreeNode, type ExplorerTreeNodeKind } from './types';
@@ -8,11 +9,13 @@ export function ExplorerTree({
   selectedProfileID,
   selectedNodeID,
   onNodeClick,
+  renderNodeActions,
 }: {
   nodes: ExplorerTreeNode[];
   selectedProfileID: string;
   selectedNodeID: string;
   onNodeClick: (node: ExplorerTreeNode) => void;
+  renderNodeActions?: (node: ExplorerTreeNode) => React.ReactNode;
 }) {
   return (
     <div className="explorer-tree">
@@ -24,6 +27,7 @@ export function ExplorerTree({
           selectedProfileID={selectedProfileID}
           selectedNodeID={selectedNodeID}
           onNodeClick={onNodeClick}
+          renderNodeActions={renderNodeActions}
         />
       ))}
     </div>
@@ -36,12 +40,14 @@ function ExplorerTreeNodeView({
   selectedProfileID,
   selectedNodeID,
   onNodeClick,
+  renderNodeActions,
 }: {
   node: ExplorerTreeNode;
   depth: number;
   selectedProfileID: string;
   selectedNodeID: string;
   onNodeClick: (node: ExplorerTreeNode) => void;
+  renderNodeActions?: (node: ExplorerTreeNode) => React.ReactNode;
 }) {
   const canExpand = canExpandExplorerNode(node);
   const active = node.id === selectedNodeID || (node.kind === 'connection' && node.profileID === selectedProfileID);
@@ -49,28 +55,31 @@ function ExplorerTreeNodeView({
 
   return (
     <div className="explorer-tree-item">
-      <button
-        type="button"
-        className={active ? 'explorer-node active' : 'explorer-node'}
-        style={{ paddingLeft: 8 + depth * 14 }}
-        onClick={() => onNodeClick(node)}
-      >
-        <span className="explorer-toggle">
-          {node.loading ? (
-            <LoaderCircle size={14} strokeWidth={2} />
-          ) : canExpand ? (
-            node.expanded ? (
-              <ChevronDown size={14} strokeWidth={2} />
-            ) : (
-              <ChevronRight size={14} strokeWidth={2} />
-            )
-          ) : null}
-        </span>
-        <span className={`explorer-icon ${node.kind}`}><Icon size={15} strokeWidth={1.8} /></span>
-        <span className="explorer-label">
-          <span>{node.label}</span>
-        </span>
-      </button>
+      <div className={active ? 'explorer-node-row active' : 'explorer-node-row'}>
+        <button
+          type="button"
+          className="explorer-node"
+          style={{ paddingLeft: 8 + depth * 14 }}
+          onClick={() => onNodeClick(node)}
+        >
+          <span className="explorer-toggle">
+            {node.loading ? (
+              <LoaderCircle size={14} strokeWidth={2} />
+            ) : canExpand ? (
+              node.expanded ? (
+                <ChevronDown size={14} strokeWidth={2} />
+              ) : (
+                <ChevronRight size={14} strokeWidth={2} />
+              )
+            ) : null}
+          </span>
+          <span className={`explorer-icon ${node.kind}`}><Icon size={15} strokeWidth={1.8} /></span>
+          <span className="explorer-label">
+            <span>{node.label}</span>
+          </span>
+        </button>
+        <span className="explorer-actions">{renderNodeActions?.(node)}</span>
+      </div>
       {node.error && <div className="explorer-error">{node.error}</div>}
       {node.expanded &&
         node.children.map((child) => (
@@ -81,6 +90,7 @@ function ExplorerTreeNodeView({
             selectedProfileID={selectedProfileID}
             selectedNodeID={selectedNodeID}
             onNodeClick={onNodeClick}
+            renderNodeActions={renderNodeActions}
           />
         ))}
     </div>

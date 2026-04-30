@@ -4,12 +4,14 @@ import {
   ChevronsDownUp,
   Copy,
   FileCode2,
+  Pencil,
   Maximize2,
   Minus,
   Play,
   Plus,
   Square,
   SquareStack,
+  Trash2,
   X,
 } from 'lucide-react';
 import type { editor } from 'monaco-editor';
@@ -21,7 +23,12 @@ import {
   GetRows,
   RunQuery,
 } from '../wailsjs/go/api/QueryAPI';
-import { ListProfiles, SaveProfile, TestConnection } from '../wailsjs/go/api/ConnectionAPI';
+import {
+  DeleteProfile,
+  ListProfiles,
+  SaveProfile,
+  TestConnectionProfile,
+} from '../wailsjs/go/api/ConnectionAPI';
 import {
   GetObjectInfo,
   ListDatabases as ListExplorerDatabases,
@@ -85,6 +92,19 @@ function preferredDatabase(current: string, profileDatabase: string, databases: 
   return databases[0] ?? profileDatabase ?? current;
 }
 
+function profileToForm(profile: domain.ConnProfile): ProfileFormState {
+  return {
+    id: profile.id,
+    name: profile.name,
+    host: profile.host,
+    port: String(profile.port || ''),
+    user: profile.user,
+    password: profile.options?.password ?? '',
+    database: profile.database,
+    sslMode: profile.sslMode || 'disable',
+  };
+}
+
 export default function App() {
   const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null);
   const tabsRef = useRef<EditorTab[]>([]);
@@ -103,6 +123,7 @@ export default function App() {
   const [profileForm, setProfileForm] = useState<ProfileFormState>(defaultProfileForm);
   const [savingProfile, setSavingProfile] = useState(false);
   const [testingProfile, setTestingProfile] = useState(false);
+  const [deletingProfileID, setDeletingProfileID] = useState('');
   const [connectionMessage, setConnectionMessage] = useState('');
   const [windowMaximized, setWindowMaximized] = useState(false);
   const [explorerPaneOpen, setExplorerPaneOpen] = useState(true);
@@ -568,7 +589,19 @@ export default function App() {
     setProfileForm((current) => ({ ...current, [field]: value }));
   }
 
-  async function handleSaveProfile({ testAfterSave }: { testAfterSave: boolean }) {
+  function handleAddConnection() {
+    setProfileForm({ ...defaultProfileForm });
+    setConnectionMessage('');
+    setShowProfileForm((current) => !current || Boolean(profileForm.id));
+  }
+
+  function handleEditProfile(profile: domain.ConnProfile) {
+    setProfileForm(profileToForm(profile));
+    setConnectionMessage('');
+    setShowProfileForm(true);
+  }
+
+  async function handleSaveProfile() {
     setSavingProfile(true);
     setConnectionMessage('');
     setGlobalError('');
@@ -578,20 +611,61 @@ export default function App() {
       await SaveProfile(profile);
       await refreshProfiles(profile.id);
       setShowProfileForm(false);
-
-      if (testAfterSave) {
-        setTestingProfile(true);
-        const testResult = await TestConnection(profile.id);
-        setConnectionMessage(testResult.message || (testResult.ok ? 'Connection test passed' : 'Connection test failed'));
-        if (!testResult.ok) {
-          setShowProfileForm(true);
-        }
-      }
+      setProfileForm({ ...defaultProfileForm });
+      setConnectionMessage('Connection saved');
     } catch (err) {
       setGlobalError(formatError(err));
     } finally {
       setSavingProfile(false);
+    }
+  }
+
+  async function handleTestProfile() {
+    setTestingProfile(true);
+    setConnectionMessage('');
+    setGlobalError('');
+
+    try {
+      const profile = buildProfile(profileForm);
+      const testResult = await TestConnectionProfile(profile);
+      setConnectionMessage(testResult.message || (testResult.ok ? 'Connection test passed' : 'Connection test failed'));
+    } catch (err) {
+      setGlobalError(formatError(err));
+    } finally {
       setTestingProfile(false);
+    }
+  }
+
+  async function handleDeleteProfile(profile: domain.ConnProfile) {
+    if (!window.confirm(`Delete connection "${profile.name || profile.id}"?`)) {
+      return;
+    }
+
+    setDeletingProfileID(profile.id);
+    setConnectionMessage('');
+    setGlobalError('');
+
+    try {
+      await DeleteProfile(profile.id);
+      await refreshProfiles();
+      setDatabaseOptionsByProfileID((current) => {
+        const next = { ...current };
+        delete next[profile.id];
+        return next;
+      });
+      setObjectTabs((current) => current.filter((tab) => tab.node.profileID !== profile.id));
+      if (activeObjectTab?.node.profileID === profile.id) {
+        setActiveWorkspaceTabID(activeTabID);
+      }
+      if (profileForm.id === profile.id) {
+        setShowProfileForm(false);
+        setProfileForm({ ...defaultProfileForm });
+      }
+      setConnectionMessage('Connection deleted');
+    } catch (err) {
+      setGlobalError(formatError(err));
+    } finally {
+      setDeletingProfileID('');
     }
   }
 
@@ -1241,7 +1315,7 @@ export default function App() {
                   type="button"
                   aria-label="Add connection"
                   title="Add connection"
-                  onClick={() => setShowProfileForm((current) => !current)}
+                  onClick={handleAddConnection}
                 >
                   <Plus size={15} strokeWidth={2} />
                 </button>
@@ -1254,8 +1328,8 @@ export default function App() {
                   saving={savingProfile}
                   testing={testingProfile}
                   onChange={updateProfileField}
-                  onSave={() => void handleSaveProfile({ testAfterSave: false })}
-                  onTest={() => void handleSaveProfile({ testAfterSave: true })}
+                  onSave={() => void handleSaveProfile()}
+                  onTest={() => void handleTestProfile()}
                 />
               )}
 
@@ -1271,6 +1345,44 @@ export default function App() {
                   selectedProfileID={activeProfileID}
                   selectedNodeID={selectedExplorerNodeID}
                   onNodeClick={(node) => void handleExplorerNodeClick(node)}
+                  renderNodeActions={(node) => {
+                    if (node.kind !== 'connection') {
+                      return null;
+                    }
+                    const profile = profiles.find((candidate) => candidate.id === node.profileID);
+                    if (!profile) {
+                      return null;
+                    }
+                    const busy = savingProfile || testingProfile || deletingProfileID === profile.id;
+                    return (
+                      <>
+                        <button
+                          type="button"
+                          aria-label={`Edit ${profile.name || profile.id}`}
+                          title="Edit connection"
+                          disabled={busy}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            handleEditProfile(profile);
+                          }}
+                        >
+                          <Pencil size={13} strokeWidth={2} />
+                        </button>
+                        <button
+                          type="button"
+                          aria-label={`Delete ${profile.name || profile.id}`}
+                          title="Delete connection"
+                          disabled={busy}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            void handleDeleteProfile(profile);
+                          }}
+                        >
+                          <Trash2 size={13} strokeWidth={2} />
+                        </button>
+                      </>
+                    );
+                  }}
                 />
               )}
             </div>

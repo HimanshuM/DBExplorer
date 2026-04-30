@@ -27,6 +27,14 @@ func (a *ConnectionAPI) SaveProfile(profile domain.ConnProfile) error {
 	return a.service.SaveProfile(context.Background(), profile)
 }
 
+func (a *ConnectionAPI) DeleteProfile(id domain.ConnProfileID) error {
+	return a.service.DeleteProfile(context.Background(), id)
+}
+
 func (a *ConnectionAPI) TestConnection(profileID domain.ConnProfileID) (domain.ConnectionTestResult, error) {
 	return a.service.TestConnection(context.Background(), profileID)
+}
+
+func (a *ConnectionAPI) TestConnectionProfile(profile domain.ConnProfile) (domain.ConnectionTestResult, error) {
+	return a.service.TestConnectionProfile(context.Background(), profile)
 }

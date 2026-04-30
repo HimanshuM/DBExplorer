@@ -143,6 +143,33 @@ func TestConnectionServiceSaveProfileReturnsPersistenceError(t *testing.T) {
 	}
 }
 
+func TestConnectionServiceDeleteProfilePersistsSortedSnapshot(t *testing.T) {
+	store := &recordingProfileStore{}
+	service := NewConnectionServiceWithStore(driver.NewRegistry(), map[domain.ConnProfileID]domain.ConnProfile{
+		"a_profile": {ID: "a_profile", Kind: domain.ConnectionKindPostgres},
+		"m_profile": {ID: "m_profile", Kind: domain.ConnectionKindPostgres},
+		"z_profile": {ID: "z_profile", Kind: domain.ConnectionKindPostgres},
+	}, store)
+
+	if err := service.DeleteProfile(context.Background(), "m_profile"); err != nil {
+		t.Fatalf("DeleteProfile returned error: %v", err)
+	}
+
+	if _, err := service.GetProfile(context.Background(), "m_profile"); err == nil {
+		t.Fatal("expected deleted profile lookup to fail")
+	}
+	if len(store.profiles) != 2 {
+		t.Fatalf("expected 2 persisted profiles, got %+v", store.profiles)
+	}
+	if store.profiles[0].ID != "a_profile" || store.profiles[1].ID != "z_profile" {
+		t.Fatalf("expected sorted persisted profiles, got %+v", store.profiles)
+	}
+
+	if err := service.DeleteProfile(context.Background(), "missing"); err == nil {
+		t.Fatal("expected deleting a missing profile to fail")
+	}
+}
+
 func TestConnectionServiceTestConnection(t *testing.T) {
 	registry := driver.NewRegistry()
 	profile := domain.ConnProfile{ID: "profile_1", Kind: domain.ConnectionKindPostgres}
@@ -186,5 +213,32 @@ func TestConnectionServiceTestConnection(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Fatalf("expected 1 driver call, got %d", calls)
+	}
+}
+
+func TestConnectionServiceTestConnectionProfileDoesNotRequireSavedProfile(t *testing.T) {
+	registry := driver.NewRegistry()
+	profile := domain.ConnProfile{ID: "unsaved", Kind: domain.ConnectionKindPostgres}
+	service := NewConnectionService(registry, map[domain.ConnProfileID]domain.ConnProfile{})
+	expectedResult := domain.ConnectionTestResult{OK: true, Message: "ok"}
+
+	if err := registry.Register(&connectionTestFactory{
+		kind: profile.Kind,
+		testFn: func(_ context.Context, gotProfile domain.ConnProfile, _ domain.SecretRef) (domain.ConnectionTestResult, error) {
+			if gotProfile.ID != profile.ID {
+				t.Fatalf("expected profile %q, got %q", profile.ID, gotProfile.ID)
+			}
+			return expectedResult, nil
+		},
+	}); err != nil {
+		t.Fatalf("register factory: %v", err)
+	}
+
+	result, err := service.TestConnectionProfile(context.Background(), profile)
+	if err != nil {
+		t.Fatalf("TestConnectionProfile returned error: %v", err)
+	}
+	if result != expectedResult {
+		t.Fatalf("unexpected test connection result: %+v", result)
 	}
 }

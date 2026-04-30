@@ -585,9 +585,26 @@ button svg {
   min-width: 0;
 }
 
+.explorer-node-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  width: 100%;
+  height: 28px;
+  min-width: 0;
+}
+
+.explorer-node-row:hover {
+  background: #1c232d;
+}
+
+.explorer-node-row.active {
+  background: #202b43;
+}
+
 .explorer-node {
   display: grid;
-  grid-template-columns: 14px 22px minmax(0, 1fr) 24px;
+  grid-template-columns: 14px 22px minmax(0, 1fr);
   align-items: center;
   width: 100%;
   height: 28px;
@@ -597,14 +614,6 @@ button svg {
   border-radius: 0;
   background: transparent;
   text-align: left;
-}
-
-.explorer-node:hover {
-  background: #1c232d;
-}
-
-.explorer-node.active {
-  background: #202b43;
 }
 
 .explorer-toggle {
@@ -668,6 +677,35 @@ button svg {
   color: #d7dde8;
   font-size: 12px;
   font-weight: 500;
+}
+
+.explorer-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding-right: 4px;
+  opacity: 0;
+}
+
+.explorer-node-row:hover .explorer-actions,
+.explorer-node-row.active .explorer-actions,
+.explorer-node-row:focus-within .explorer-actions {
+  opacity: 1;
+}
+
+.explorer-actions button {
+  width: 22px;
+  height: 22px;
+  min-width: 22px;
+  padding: 0;
+  border-color: transparent;
+  background: transparent;
+  color: #9ba6b8;
+}
+
+.explorer-actions button:hover {
+  background: #293241;
+  color: #d7dde8;
 }
 
 .explorer-label small {
