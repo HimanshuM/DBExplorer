@@ -494,6 +494,18 @@ button svg {
   border-bottom: 1px solid #272d37;
 }
 
+.monaco-editor .sql-token-schema {
+  color: #e5c07b !important;
+}
+
+.monaco-editor .sql-token-table {
+  color: #61afef !important;
+}
+
+.monaco-editor .sql-token-column {
+  color: #e06c75 !important;
+}
+
 .object-workspace {
   display: grid;
   grid-template-rows: 48px minmax(0, 1fr);
