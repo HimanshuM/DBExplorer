@@ -54,7 +54,7 @@ import { ResultTable, resultLabel } from './resultTable';
 import { getSQLExecutionTarget } from './sqlSelection';
 import { StatusBar, collectRunningJobStatusItems } from './statusBar';
 import { ConnectionDropdown, DatabaseDropdown } from './connectionDropdown';
-import { LayoutIcons, iconForObjectTabKind } from './objectIcons';
+import { LayoutPaneIcon, iconForObjectTabKind } from './objectIcons';
 import {
   type EditorTab,
   type ExplorerTreeNode,
@@ -105,6 +105,8 @@ export default function App() {
   const [testingProfile, setTestingProfile] = useState(false);
   const [connectionMessage, setConnectionMessage] = useState('');
   const [windowMaximized, setWindowMaximized] = useState(false);
+  const [explorerPaneOpen, setExplorerPaneOpen] = useState(true);
+  const [resultsPaneOpen, setResultsPaneOpen] = useState(true);
   const [explorerNodes, setExplorerNodes] = useState<ExplorerTreeNode[]>([]);
   const [selectedExplorerNodeID, setSelectedExplorerNodeID] = useState('');
   const [statusPanelOpen, setStatusPanelOpen] = useState(false);
@@ -1085,10 +1087,6 @@ export default function App() {
     };
   }, [tabs, objectTabs]);
 
-  const LeftPaneIcon = LayoutIcons.left;
-  const RightPaneIcon = LayoutIcons.right;
-  const BottomPaneIcon = LayoutIcons.bottom;
-
   return (
     <main className="app-shell">
       <header className="app-titlebar">
@@ -1177,14 +1175,33 @@ export default function App() {
         </div>
         <div className="titlebar-right titlebar-control">
           <div className="layout-controls" aria-label="Layout controls">
-            <button type="button" aria-label="Toggle left pane" title="Toggle left pane">
-              <LeftPaneIcon size={16} strokeWidth={1.8} />
+            <button
+              type="button"
+              aria-label="Toggle explorer pane"
+              aria-pressed={explorerPaneOpen}
+              title="Toggle explorer pane"
+              className={explorerPaneOpen ? 'active' : undefined}
+              onClick={() => setExplorerPaneOpen((current) => !current)}
+            >
+              <LayoutPaneIcon pane="left" open={explorerPaneOpen} size={16} strokeWidth={1.8} />
             </button>
-            <button type="button" aria-label="Toggle bottom pane" title="Toggle bottom pane">
-              <BottomPaneIcon size={16} strokeWidth={1.8} />
+            <button
+              type="button"
+              aria-label="Toggle results pane"
+              aria-pressed={resultsPaneOpen}
+              title="Toggle results pane"
+              className={resultsPaneOpen ? 'active' : undefined}
+              onClick={() => setResultsPaneOpen((current) => !current)}
+            >
+              <LayoutPaneIcon pane="bottom" open={resultsPaneOpen} size={16} strokeWidth={1.8} />
             </button>
-            <button type="button" aria-label="Toggle right pane" title="Toggle right pane">
-              <RightPaneIcon size={16} strokeWidth={1.8} />
+            <button
+              type="button"
+              aria-label="Right pane unavailable"
+              title="Right pane unavailable"
+              disabled
+            >
+              <LayoutPaneIcon pane="right" size={16} strokeWidth={1.8} />
             </button>
           </div>
           <div className="window-controls">
@@ -1205,60 +1222,62 @@ export default function App() {
         </div>
       </header>
 
-      <div className="app-body">
-        <aside className="explorer-pane">
-          <header className="pane-header">
-            <span>Connections</span>
-            <div className="pane-header-actions">
-              <button
-                type="button"
-                aria-label="Collapse all"
-                title="Collapse all"
-                onClick={() => setExplorerNodes((current) => collapseExplorerNodes(current))}
-                disabled={explorerNodes.length === 0}
-              >
-                <ChevronsDownUp size={15} strokeWidth={2} />
-              </button>
-              <button
-                type="button"
-                aria-label="Add connection"
-                title="Add connection"
-                onClick={() => setShowProfileForm((current) => !current)}
-              >
-                <Plus size={15} strokeWidth={2} />
-              </button>
+      <div className={explorerPaneOpen ? 'app-body' : 'app-body explorer-collapsed'}>
+        {explorerPaneOpen && (
+          <aside className="explorer-pane">
+            <header className="pane-header">
+              <span>Connections</span>
+              <div className="pane-header-actions">
+                <button
+                  type="button"
+                  aria-label="Collapse all"
+                  title="Collapse all"
+                  onClick={() => setExplorerNodes((current) => collapseExplorerNodes(current))}
+                  disabled={explorerNodes.length === 0}
+                >
+                  <ChevronsDownUp size={15} strokeWidth={2} />
+                </button>
+                <button
+                  type="button"
+                  aria-label="Add connection"
+                  title="Add connection"
+                  onClick={() => setShowProfileForm((current) => !current)}
+                >
+                  <Plus size={15} strokeWidth={2} />
+                </button>
+              </div>
+            </header>
+            <div className="explorer-content">
+              {showProfileForm && (
+                <ConnectionForm
+                  form={profileForm}
+                  saving={savingProfile}
+                  testing={testingProfile}
+                  onChange={updateProfileField}
+                  onSave={() => void handleSaveProfile({ testAfterSave: false })}
+                  onTest={() => void handleSaveProfile({ testAfterSave: true })}
+                />
+              )}
+
+              {connectionMessage && <div className="message compact">{connectionMessage}</div>}
+
+              {loadingProfiles ? (
+                <div className="empty-tree">Loading profiles</div>
+              ) : profiles.length === 0 ? (
+                <div className="empty-tree">No saved connections</div>
+              ) : (
+                <ExplorerTree
+                  nodes={explorerNodes}
+                  selectedProfileID={activeProfileID}
+                  selectedNodeID={selectedExplorerNodeID}
+                  onNodeClick={(node) => void handleExplorerNodeClick(node)}
+                />
+              )}
             </div>
-          </header>
-          <div className="explorer-content">
-            {showProfileForm && (
-              <ConnectionForm
-                form={profileForm}
-                saving={savingProfile}
-                testing={testingProfile}
-                onChange={updateProfileField}
-                onSave={() => void handleSaveProfile({ testAfterSave: false })}
-                onTest={() => void handleSaveProfile({ testAfterSave: true })}
-              />
-            )}
+          </aside>
+        )}
 
-            {connectionMessage && <div className="message compact">{connectionMessage}</div>}
-
-            {loadingProfiles ? (
-              <div className="empty-tree">Loading profiles</div>
-            ) : profiles.length === 0 ? (
-              <div className="empty-tree">No saved connections</div>
-            ) : (
-              <ExplorerTree
-                nodes={explorerNodes}
-                selectedProfileID={activeProfileID}
-                selectedNodeID={selectedExplorerNodeID}
-                onNodeClick={(node) => void handleExplorerNodeClick(node)}
-              />
-            )}
-          </div>
-        </aside>
-
-        <section className="workspace">
+        <section className={resultsPaneOpen ? 'workspace' : 'workspace results-collapsed'}>
           <header className="top-bar">
             <div className="toolbar">
               <button
@@ -1333,21 +1352,23 @@ export default function App() {
             )}
           </section>
 
-          <section className="results-region">
-            <header className="pane-header">
-              <span>{visibleResult.rows ? resultLabel(visibleResult.rows) : 'Results'}</span>
-              <span className={`status-pill ${status}`}>{status}</span>
-            </header>
-            {visibleError ? (
-              <div className="message error">{visibleError}</div>
-            ) : visibleResult.schema && visibleResult.rows ? (
-              <ResultTable schema={visibleResult.schema} rows={visibleResult.rows} />
-            ) : (
-              <div className="result-placeholder">
-                {activeTab?.running ? 'Waiting for query results' : 'Result grid mount point'}
-              </div>
-            )}
-          </section>
+          {resultsPaneOpen && (
+            <section className="results-region">
+              <header className="pane-header">
+                <span>{visibleResult.rows ? resultLabel(visibleResult.rows) : 'Results'}</span>
+                <span className={`status-pill ${status}`}>{status}</span>
+              </header>
+              {visibleError ? (
+                <div className="message error">{visibleError}</div>
+              ) : visibleResult.schema && visibleResult.rows ? (
+                <ResultTable schema={visibleResult.schema} rows={visibleResult.rows} />
+              ) : (
+                <div className="result-placeholder">
+                  {activeTab?.running ? 'Waiting for query results' : 'Result grid mount point'}
+                </div>
+              )}
+            </section>
+          )}
         </section>
       </div>
       <StatusBar
