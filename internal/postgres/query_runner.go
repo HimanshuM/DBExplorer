@@ -228,6 +228,7 @@ func (qr *QueryRunner) executeSingleResultQuery(ctx context.Context, session *se
 
 	fieldDescriptions := rows.FieldDescriptions()
 	schema := buildSchema(fieldDescriptions, session.conn)
+	typeNames := typeNamesForFields(fieldDescriptions, session.conn)
 	storedRows := make([][]any, 0)
 
 	for rows.Next() {
@@ -235,7 +236,7 @@ func (qr *QueryRunner) executeSingleResultQuery(ctx context.Context, session *se
 		if err != nil {
 			return domain.ResultSchema{}, nil, domain.ResultSetSummary{}, fmt.Errorf("row decode: %w", err)
 		}
-		storedRows = append(storedRows, cloneRow(vals))
+		storedRows = append(storedRows, cloneRow(normalizeRow(vals, typeNames)))
 	}
 
 	if err := rows.Err(); err != nil {
@@ -526,18 +527,14 @@ func (h *jobHandle) BackendPID() int {
 }
 
 func buildSchema(fields []pgconn.FieldDescription, conn *pgx.Conn) domain.ResultSchema {
+	typeNames := typeNamesForFields(fields, conn)
 	columns := make([]domain.ColumnDef, 0, len(fields))
-	for _, f := range fields {
-		typeName := "unknown"
-		if t, ok := conn.TypeMap().TypeForOID(f.DataTypeOID); ok && t != nil {
-			typeName = t.Name
-		}
-
+	for i, f := range fields {
 		columns = append(columns, domain.ColumnDef{
 			Name: string(f.Name),
 			Type: domain.ColumnType{
-				DBTypeName: typeName,
-				Category:   categoryForType(typeName),
+				DBTypeName: typeNames[i],
+				Category:   categoryForType(typeNames[i]),
 				IsArray:    false,
 				Nullable:   true,
 			},
@@ -545,6 +542,17 @@ func buildSchema(fields []pgconn.FieldDescription, conn *pgx.Conn) domain.Result
 		})
 	}
 	return domain.ResultSchema{Columns: columns}
+}
+
+func typeNamesForFields(fields []pgconn.FieldDescription, conn *pgx.Conn) []string {
+	typeNames := make([]string, len(fields))
+	for i, f := range fields {
+		typeNames[i] = "unknown"
+		if t, ok := conn.TypeMap().TypeForOID(f.DataTypeOID); ok && t != nil {
+			typeNames[i] = t.Name
+		}
+	}
+	return typeNames
 }
 
 func categoryForType(dbTypeName string) string {
@@ -598,6 +606,43 @@ func cloneRow(row []any) []any {
 		copied[i] = cloneValue(value)
 	}
 	return copied
+}
+
+func normalizeRow(row []any, typeNames []string) []any {
+	normalized := make([]any, len(row))
+	for i, value := range row {
+		typeName := ""
+		if i < len(typeNames) {
+			typeName = typeNames[i]
+		}
+		normalized[i] = normalizeValue(value, typeName)
+	}
+	return normalized
+}
+
+func normalizeValue(value any, dbTypeName string) any {
+	if strings.ToLower(dbTypeName) != "uuid" {
+		return value
+	}
+
+	switch v := value.(type) {
+	case [16]byte:
+		return formatUUIDBytes(v[:])
+	case []byte:
+		if len(v) == 16 {
+			return formatUUIDBytes(v)
+		}
+		return string(v)
+	default:
+		return value
+	}
+}
+
+func formatUUIDBytes(value []byte) string {
+	if len(value) != 16 {
+		return string(value)
+	}
+	return fmt.Sprintf("%x-%x-%x-%x-%x", value[0:4], value[4:6], value[6:8], value[8:10], value[10:16])
 }
 
 func cloneValue(value any) any {

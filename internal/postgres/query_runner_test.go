@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -434,6 +435,21 @@ func TestJobSnapshotAndHelpers(t *testing.T) {
 
 	if categoryForType("VARCHAR") != "text" || categoryForType("int8") != "number" || categoryForType("bool") != "bool" || categoryForType("jsonb") != "json" || categoryForType("timestamp") != "datetime" || categoryForType("bytea") != "binary" || categoryForType("geography") != "other" {
 		t.Fatal("unexpected category mapping")
+	}
+
+	uuidBytes := []byte{0x55, 0x0e, 0x84, 0x00, 0xe2, 0x9b, 0x41, 0xd4, 0xa7, 0x16, 0x44, 0x66, 0x55, 0x44, 0x00, 0x00}
+	if got := normalizeValue(uuidBytes, "uuid"); got != "550e8400-e29b-41d4-a716-446655440000" {
+		t.Fatalf("expected UUID bytes to be formatted, got %#v", got)
+	}
+
+	var uuidArray [16]byte
+	copy(uuidArray[:], uuidBytes)
+	if got := normalizeValue(uuidArray, "uuid"); got != "550e8400-e29b-41d4-a716-446655440000" {
+		t.Fatalf("expected UUID byte array to be formatted, got %#v", got)
+	}
+
+	if got := normalizeValue(uuidBytes, "bytea"); !reflect.DeepEqual(got, uuidBytes) {
+		t.Fatalf("expected bytea bytes to remain unchanged, got %#v", got)
 	}
 
 	handle := &jobHandle{id: "job_2", sessionID: "sess_2", backendPID: 99}
