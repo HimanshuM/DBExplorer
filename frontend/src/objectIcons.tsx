@@ -12,6 +12,7 @@ import {
   Plug,
   Sigma,
   Table2,
+  Tags,
 } from 'lucide-react';
 import { type LucideIcon } from 'lucide-react';
 import { type ExplorerTreeNodeKind } from './types';
@@ -36,6 +37,8 @@ export function iconForExplorerKind(kind: ExplorerTreeNodeKind): LucideIcon {
       return Hash;
     case 'function':
       return Sigma;
+    case 'type':
+      return Tags;
     default:
       return FileCode2;
   }
@@ -65,5 +68,6 @@ function isExplorerKind(kind: string): kind is ExplorerTreeNodeKind {
     'materialized_view',
     'sequence',
     'function',
+    'type',
   ].includes(kind);
 }

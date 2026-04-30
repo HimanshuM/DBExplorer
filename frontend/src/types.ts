@@ -31,7 +31,7 @@ export type EditorTab = {
   error: string;
 };
 
-export type ObjectInfoSection = 'overview' | 'columns' | 'indexes' | 'functions' | 'data';
+export type ObjectInfoSection = 'overview' | 'ddl' | 'columns' | 'indexes' | 'foreignKeys' | 'references' | 'values' | 'usedBy' | 'functions' | 'data';
 
 export type ObjectInfoTab = {
   id: string;
@@ -40,6 +40,7 @@ export type ObjectInfoTab = {
   section: ObjectInfoSection;
   state: ObjectInfoState;
   data: ResultState;
+  dataFilter: string;
   dataJob: domain.JobSummary | null;
   dataActiveJobID: string;
   dataRunning: boolean;
@@ -63,7 +64,8 @@ export type ExplorerTreeNodeKind =
   | 'view'
   | 'materialized_view'
   | 'sequence'
-  | 'function';
+  | 'function'
+  | 'type';
 
 export type ExplorerTreeNode = {
   id: string;

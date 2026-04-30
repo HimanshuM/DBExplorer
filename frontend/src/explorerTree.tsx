@@ -121,8 +121,9 @@ export function groupExplorerObjects(
     materialized_view: 'Materialized Views',
     sequence: 'Sequences',
     function: 'Functions',
+    type: 'Types',
   };
-  const order = ['table', 'view', 'materialized_view', 'sequence', 'function'];
+  const order = ['table', 'view', 'materialized_view', 'sequence', 'function', 'type'];
 
   return order.flatMap((kind) => {
     const groupedObjects = objects.filter((object) => object.kind === kind);
@@ -173,7 +174,7 @@ export function isDataExplorerObject(node: ExplorerTreeNode) {
 }
 
 export function isInspectableExplorerObject(node: ExplorerTreeNode) {
-  return ['table', 'view', 'materialized_view', 'sequence', 'function'].includes(node.kind);
+  return ['table', 'view', 'materialized_view', 'sequence', 'function', 'type'].includes(node.kind);
 }
 
 export function explorerNodeID(...parts: string[]) {

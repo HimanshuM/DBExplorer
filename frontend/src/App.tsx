@@ -48,7 +48,7 @@ import {
   updateExplorerNodeList,
 } from './explorerTree';
 import { formatError, jobStatusError, quoteIdentifier } from './format';
-import { ObjectInfoWorkspace, objectKindLabel } from './objectInfo';
+import { ObjectInfoWorkspace, objectKindLabel, type ObjectLinkTarget } from './objectInfo';
 import { createEditorTab, terminalStatuses } from './queryTabs';
 import { ResultTable, resultLabel } from './resultTable';
 import { getSQLExecutionTarget } from './sqlSelection';
@@ -714,6 +714,7 @@ export default function App() {
         section: 'overview',
         state: { loading: true, error: '', info: null },
         data: { schema: null, rows: null },
+        dataFilter: '',
         dataJob: null,
         dataActiveJobID: '',
         dataRunning: false,
@@ -726,6 +727,32 @@ export default function App() {
 
     setActiveWorkspaceTabID(tabID);
     void loadObjectInfo(tabID, node);
+  }
+
+  function openLinkedObjectInfo(tab: ObjectInfoTab, target: ObjectLinkTarget) {
+    const node: ExplorerTreeNode = {
+      id: explorerNodeID(
+        'object',
+        tab.node.profileID,
+        tab.node.database ?? '',
+        target.schema,
+        target.kind,
+        target.name,
+      ),
+      label: target.name,
+      kind: target.kind,
+      profileID: tab.node.profileID,
+      database: tab.node.database,
+      schema: target.schema,
+      objectName: target.name,
+      expanded: false,
+      loaded: true,
+      loading: false,
+      children: [],
+    };
+    setSelectedProfileID(tab.node.profileID);
+    setSelectedExplorerNodeID(node.id);
+    openObjectInfoTab(node);
   }
 
   async function loadObjectInfo(tabID: string, node: ExplorerTreeNode) {
@@ -762,7 +789,13 @@ export default function App() {
     });
 
     try {
-      const sql = `select *\nfrom ${quoteIdentifier(tab.node.schema ?? 'public')}.${quoteIdentifier(tab.node.objectName ?? tab.node.label)}\nlimit 100;`;
+      const filter = tab.dataFilter.trim();
+      const sql = [
+        `select *`,
+        `from ${quoteIdentifier(tab.node.schema ?? 'public')}.${quoteIdentifier(tab.node.objectName ?? tab.node.label)}`,
+        ...(filter ? [`where ${filter}`] : []),
+        `limit 100;`,
+      ].join('\n');
       const response = await RunQuery(domain.RunQueryRequest.createFrom({
         profileId: tab.node.profileID,
         database: tab.node.database ?? '',
@@ -1275,6 +1308,8 @@ export default function App() {
                   }
                 }}
                 onRefreshData={() => void loadObjectData(activeObjectTab)}
+                onDataFilterChange={(dataFilter) => updateObjectTab(activeObjectTab.id, { dataFilter })}
+                onOpenObject={(target) => openLinkedObjectInfo(activeObjectTab, target)}
               />
             ) : (
               <Editor

@@ -303,6 +303,86 @@ export namespace domain {
 	        this.value = source["value"];
 	    }
 	}
+	export class TypeUsageInfo {
+	    schema: string;
+	    object: string;
+	    kind: string;
+	    column: string;
+	    dataType: string;
+	    nullable: boolean;
+	    default: string;
+	    comment: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new TypeUsageInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.schema = source["schema"];
+	        this.object = source["object"];
+	        this.kind = source["kind"];
+	        this.column = source["column"];
+	        this.dataType = source["dataType"];
+	        this.nullable = source["nullable"];
+	        this.default = source["default"];
+	        this.comment = source["comment"];
+	    }
+	}
+	export class TypeInfo {
+	    category: string;
+	    baseType: string;
+	    inputType: string;
+	    notNull: boolean;
+	    default: string;
+	    check: string;
+	    labels: string[];
+	    attributes: TableColumnInfo[];
+	    elementType: string;
+	    subtype: string;
+	    canonical: string;
+	    subtypeDiff: string;
+	    usages: TypeUsageInfo[];
+	
+	    static createFrom(source: any = {}) {
+	        return new TypeInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.category = source["category"];
+	        this.baseType = source["baseType"];
+	        this.inputType = source["inputType"];
+	        this.notNull = source["notNull"];
+	        this.default = source["default"];
+	        this.check = source["check"];
+	        this.labels = source["labels"];
+	        this.attributes = this.convertValues(source["attributes"], TableColumnInfo);
+	        this.elementType = source["elementType"];
+	        this.subtype = source["subtype"];
+	        this.canonical = source["canonical"];
+	        this.subtypeDiff = source["subtypeDiff"];
+	        this.usages = this.convertValues(source["usages"], TypeUsageInfo);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class SequenceInfo {
 	    dataType: string;
 	    startValue: string;
@@ -347,6 +427,70 @@ export namespace domain {
 	        this.keyColumns = source["keyColumns"];
 	    }
 	}
+	export class TableReferenceInfo {
+	    name: string;
+	    schema: string;
+	    table: string;
+	    columns: string[];
+	    referencedColumns: string[];
+	    updateAction: string;
+	    deleteAction: string;
+	    matchType: string;
+	    deferrable: boolean;
+	    initiallyDeferred: boolean;
+	    definition: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new TableReferenceInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.schema = source["schema"];
+	        this.table = source["table"];
+	        this.columns = source["columns"];
+	        this.referencedColumns = source["referencedColumns"];
+	        this.updateAction = source["updateAction"];
+	        this.deleteAction = source["deleteAction"];
+	        this.matchType = source["matchType"];
+	        this.deferrable = source["deferrable"];
+	        this.initiallyDeferred = source["initiallyDeferred"];
+	        this.definition = source["definition"];
+	    }
+	}
+	export class TableForeignKeyInfo {
+	    name: string;
+	    columns: string[];
+	    referencedSchema: string;
+	    referencedTable: string;
+	    referencedColumns: string[];
+	    updateAction: string;
+	    deleteAction: string;
+	    matchType: string;
+	    deferrable: boolean;
+	    initiallyDeferred: boolean;
+	    definition: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new TableForeignKeyInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.columns = source["columns"];
+	        this.referencedSchema = source["referencedSchema"];
+	        this.referencedTable = source["referencedTable"];
+	        this.referencedColumns = source["referencedColumns"];
+	        this.updateAction = source["updateAction"];
+	        this.deleteAction = source["deleteAction"];
+	        this.matchType = source["matchType"];
+	        this.deferrable = source["deferrable"];
+	        this.initiallyDeferred = source["initiallyDeferred"];
+	        this.definition = source["definition"];
+	    }
+	}
 	export class TableIndexInfo {
 	    name: string;
 	    columns: string[];
@@ -355,6 +499,7 @@ export namespace domain {
 	    partial: boolean;
 	    hasExpression: boolean;
 	    valid: boolean;
+	    definition: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new TableIndexInfo(source);
@@ -369,15 +514,18 @@ export namespace domain {
 	        this.partial = source["partial"];
 	        this.hasExpression = source["hasExpression"];
 	        this.valid = source["valid"];
+	        this.definition = source["definition"];
 	    }
 	}
 	export class TableColumnInfo {
 	    name: string;
 	    position: number;
 	    dataType: string;
+	    typeSchema: string;
 	    typeName: string;
 	    nullable: boolean;
 	    default: string;
+	    comment: string;
 	    identity: string;
 	    generated: string;
 	    primaryKey: boolean;
@@ -391,9 +539,11 @@ export namespace domain {
 	        this.name = source["name"];
 	        this.position = source["position"];
 	        this.dataType = source["dataType"];
+	        this.typeSchema = source["typeSchema"];
 	        this.typeName = source["typeName"];
 	        this.nullable = source["nullable"];
 	        this.default = source["default"];
+	        this.comment = source["comment"];
 	        this.identity = source["identity"];
 	        this.generated = source["generated"];
 	        this.primaryKey = source["primaryKey"];
@@ -404,12 +554,16 @@ export namespace domain {
 	    schema: string;
 	    name: string;
 	    kind: string;
+	    ddl: string;
 	    details: ObjectDetail[];
 	    columns: TableColumnInfo[];
 	    indexes: TableIndexInfo[];
+	    foreignKeys: TableForeignKeyInfo[];
+	    referencedBy: TableReferenceInfo[];
 	    editability: TableEditabilityInfo;
 	    sequence: SequenceInfo;
 	    functions: FunctionInfo[];
+	    type: TypeInfo;
 	
 	    static createFrom(source: any = {}) {
 	        return new ObjectInfo(source);
@@ -421,12 +575,16 @@ export namespace domain {
 	        this.schema = source["schema"];
 	        this.name = source["name"];
 	        this.kind = source["kind"];
+	        this.ddl = source["ddl"];
 	        this.details = this.convertValues(source["details"], ObjectDetail);
 	        this.columns = this.convertValues(source["columns"], TableColumnInfo);
 	        this.indexes = this.convertValues(source["indexes"], TableIndexInfo);
+	        this.foreignKeys = this.convertValues(source["foreignKeys"], TableForeignKeyInfo);
+	        this.referencedBy = this.convertValues(source["referencedBy"], TableReferenceInfo);
 	        this.editability = this.convertValues(source["editability"], TableEditabilityInfo);
 	        this.sequence = this.convertValues(source["sequence"], SequenceInfo);
 	        this.functions = this.convertValues(source["functions"], FunctionInfo);
+	        this.type = this.convertValues(source["type"], TypeInfo);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -557,13 +715,17 @@ export namespace domain {
 	
 	
 	
+	
 	export class TableInfo {
 	    database: string;
 	    schema: string;
 	    name: string;
 	    kind: string;
+	    ddl: string;
 	    columns: TableColumnInfo[];
 	    indexes: TableIndexInfo[];
+	    foreignKeys: TableForeignKeyInfo[];
+	    referencedBy: TableReferenceInfo[];
 	    editability: TableEditabilityInfo;
 	
 	    static createFrom(source: any = {}) {
@@ -576,8 +738,11 @@ export namespace domain {
 	        this.schema = source["schema"];
 	        this.name = source["name"];
 	        this.kind = source["kind"];
+	        this.ddl = source["ddl"];
 	        this.columns = this.convertValues(source["columns"], TableColumnInfo);
 	        this.indexes = this.convertValues(source["indexes"], TableIndexInfo);
+	        this.foreignKeys = this.convertValues(source["foreignKeys"], TableForeignKeyInfo);
+	        this.referencedBy = this.convertValues(source["referencedBy"], TableReferenceInfo);
 	        this.editability = this.convertValues(source["editability"], TableEditabilityInfo);
 	    }
 	
@@ -599,6 +764,8 @@ export namespace domain {
 		    return a;
 		}
 	}
+	
+	
 
 }
 
