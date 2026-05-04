@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronRight, LoaderCircle } from 'lucide-react';
+import { ChevronDown, ChevronRight, CircleAlert, LoaderCircle } from 'lucide-react';
 import type React from 'react';
 import { domain } from '../wailsjs/go/models';
 import { iconForExplorerKind } from './objectIcons';
@@ -51,7 +51,8 @@ function ExplorerTreeNodeView({
 }) {
   const canExpand = canExpandExplorerNode(node);
   const active = node.id === selectedNodeID || (node.kind === 'connection' && node.profileID === selectedProfileID);
-  const Icon = iconForExplorerKind(node.kind);
+  const connectionFailed = node.kind === 'connection' && Boolean(node.error);
+  const Icon = connectionFailed ? CircleAlert : iconForExplorerKind(node.kind);
 
   return (
     <div className="explorer-tree-item">
@@ -73,14 +74,16 @@ function ExplorerTreeNodeView({
               )
             ) : null}
           </span>
-          <span className={`explorer-icon ${node.kind}`}><Icon size={15} strokeWidth={1.8} /></span>
+          <span className={`explorer-icon ${node.kind}${connectionFailed ? ' failing' : ''}`}>
+            <Icon size={15} strokeWidth={1.8} />
+          </span>
           <span className="explorer-label">
             <span>{node.label}</span>
           </span>
         </button>
         <span className="explorer-actions">{renderNodeActions?.(node)}</span>
       </div>
-      {node.error && <div className="explorer-error">{node.error}</div>}
+      {node.error && node.kind !== 'connection' && <div className="explorer-error">{node.error}</div>}
       {node.expanded &&
         node.children.map((child) => (
           <ExplorerTreeNodeView

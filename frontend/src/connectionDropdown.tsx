@@ -24,6 +24,7 @@ export function ConnectionDropdown({
       })),
     [profiles],
   );
+  const emptyLabel = profiles.length === 0 ? 'No profiles' : 'No connection';
 
   return (
     <div className="profile-picker">
@@ -32,7 +33,7 @@ export function ConnectionDropdown({
         options={options}
         value={selectedProfileID}
         disabled={disabled}
-        emptyLabel="No profiles"
+        emptyLabel={emptyLabel}
         ariaLabel="Connection profiles"
         onChange={onChange}
       />

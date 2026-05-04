@@ -5,12 +5,11 @@ import {
   Copy,
   FileCode2,
   Pencil,
-  Maximize2,
   Minus,
   Play,
   Plus,
+  Search,
   Square,
-  SquareStack,
   Trash2,
   X,
 } from 'lucide-react';
@@ -65,6 +64,7 @@ import { LayoutPaneIcon, iconForObjectTabKind } from './objectIcons';
 import {
   type EditorTab,
   type ExplorerTreeNode,
+  type ExplorerTreeNodeKind,
   type JobResultSetEvent,
   type ObjectInfoTab,
   type ProfileFormState,
@@ -76,6 +76,28 @@ type DatabaseOptionsState = {
   databases: string[];
   loading: boolean;
   error: string;
+};
+
+type ToastState = {
+  id: number;
+  message: string;
+  kind: 'error';
+} | null;
+
+type ObjectQuickOpenItem = {
+  id: string;
+  profileID: string;
+  profileName: string;
+  database: string;
+  schema: string;
+  name: string;
+  kind: Extract<ExplorerTreeNodeKind, 'table' | 'view' | 'materialized_view' | 'sequence' | 'function' | 'type'>;
+};
+
+type ObjectQuickOpenSource = {
+  profileID: string;
+  profileName: string;
+  database: string;
 };
 
 const SQL_KEYWORDS = new Set([
@@ -511,6 +533,53 @@ function preferredDatabase(current: string, profileDatabase: string, databases: 
   return databases[0] ?? profileDatabase ?? current;
 }
 
+function quickOpenObjectID(
+  profileID: string,
+  database: string,
+  schema: string,
+  kind: string,
+  name: string,
+) {
+  return explorerNodeID('quick-open-object', profileID, database, schema, kind, name);
+}
+
+function objectQuickOpenText(item: ObjectQuickOpenItem) {
+  return `${item.schema}.${item.name} ${objectKindLabel(item.kind)} ${item.profileName} ${item.database}`.toLowerCase();
+}
+
+function filterObjectQuickOpenItems(items: ObjectQuickOpenItem[], query: string) {
+  const terms = query
+    .trim()
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean);
+
+  if (terms.length === 0) {
+    return items;
+  }
+
+  return items.filter((item) => {
+    const searchableText = objectQuickOpenText(item);
+    return terms.every((term) => searchableText.includes(term));
+  });
+}
+
+function collectExplorerDatabaseSources(nodes: ExplorerTreeNode[]) {
+  const sources: { profileID: string; database: string }[] = [];
+
+  nodes.forEach((node) => {
+    if (node.kind === 'database' && node.profileID && node.database && (node.expanded || node.loaded)) {
+      sources.push({ profileID: node.profileID, database: node.database });
+    }
+
+    if (node.children.length > 0) {
+      sources.push(...collectExplorerDatabaseSources(node.children));
+    }
+  });
+
+  return sources;
+}
+
 function profileToForm(profile: domain.ConnProfile): ProfileFormState {
   return {
     id: profile.id,
@@ -529,7 +598,10 @@ export default function App() {
   const tabsRef = useRef<EditorTab[]>([]);
   const objectTabsRef = useRef<ObjectInfoTab[]>([]);
   const tabCounterRef = useRef(1);
+  const toastCounterRef = useRef(0);
   const selectedProfileIDRef = useRef('');
+  const quickOpenInputRef = useRef<HTMLInputElement | null>(null);
+  const quickOpenListRef = useRef<HTMLDivElement | null>(null);
   const [tabs, setTabs] = useState<EditorTab[]>(() => [createEditorTab(1)]);
   const [activeTabID, setActiveTabID] = useState('query_1');
   const [objectTabs, setObjectTabs] = useState<ObjectInfoTab[]>([]);
@@ -544,6 +616,7 @@ export default function App() {
   const [testingProfile, setTestingProfile] = useState(false);
   const [deletingProfileID, setDeletingProfileID] = useState('');
   const [connectionMessage, setConnectionMessage] = useState('');
+  const [toast, setToast] = useState<ToastState>(null);
   const [windowMaximized, setWindowMaximized] = useState(false);
   const [explorerPaneOpen, setExplorerPaneOpen] = useState(true);
   const [resultsPaneOpen, setResultsPaneOpen] = useState(true);
@@ -551,6 +624,13 @@ export default function App() {
   const [selectedExplorerNodeID, setSelectedExplorerNodeID] = useState('');
   const [statusPanelOpen, setStatusPanelOpen] = useState(false);
   const [databaseOptionsByProfileID, setDatabaseOptionsByProfileID] = useState<Record<string, DatabaseOptionsState>>({});
+  const [objectQuickOpenOpen, setObjectQuickOpenOpen] = useState(false);
+  const [objectQuickOpenQuery, setObjectQuickOpenQuery] = useState('');
+  const [objectQuickOpenItems, setObjectQuickOpenItems] = useState<ObjectQuickOpenItem[]>([]);
+  const [objectQuickOpenLoading, setObjectQuickOpenLoading] = useState(false);
+  const [objectQuickOpenError, setObjectQuickOpenError] = useState('');
+  const [objectQuickOpenActiveIndex, setObjectQuickOpenActiveIndex] = useState(0);
+  const [objectQuickOpenInteractionMode, setObjectQuickOpenInteractionMode] = useState<'keyboard' | 'mouse'>('keyboard');
   const handleRunRef = useRef<() => void>(() => { });
 
   const activeTab = useMemo(
@@ -590,6 +670,14 @@ export default function App() {
     () => collectRunningJobStatusItems(tabs, objectTabs),
     [tabs, objectTabs],
   );
+  const filteredObjectQuickOpenItems = useMemo(
+    () => filterObjectQuickOpenItems(objectQuickOpenItems, objectQuickOpenQuery),
+    [objectQuickOpenItems, objectQuickOpenQuery],
+  );
+  const visibleObjectQuickOpenItems = useMemo(
+    () => filteredObjectQuickOpenItems.slice(0, 80),
+    [filteredObjectQuickOpenItems],
+  );
 
   useEffect(() => {
     tabsRef.current = tabs;
@@ -604,6 +692,192 @@ export default function App() {
   }, [activeProfileID]);
 
   useEffect(() => {
+    if (!toast) {
+      return;
+    }
+
+    const timeout = window.setTimeout(() => {
+      setToast((current) => (current?.id === toast.id ? null : current));
+    }, 5000);
+
+    return () => window.clearTimeout(timeout);
+  }, [toast]);
+
+  useEffect(() => {
+    function handleGlobalKeyDown(event: KeyboardEvent) {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'p') {
+        event.preventDefault();
+        event.stopPropagation();
+        setObjectQuickOpenOpen(true);
+        setObjectQuickOpenQuery('');
+        setObjectQuickOpenActiveIndex(0);
+        setObjectQuickOpenInteractionMode('keyboard');
+        return;
+      }
+
+      if (event.key === 'Escape') {
+        setObjectQuickOpenOpen(false);
+      }
+    }
+
+    window.addEventListener('keydown', handleGlobalKeyDown, true);
+    return () => window.removeEventListener('keydown', handleGlobalKeyDown, true);
+  }, []);
+
+  useEffect(() => {
+    if (!objectQuickOpenOpen) {
+      return;
+    }
+
+    window.setTimeout(() => {
+      quickOpenInputRef.current?.focus();
+      quickOpenInputRef.current?.select();
+    }, 0);
+  }, [objectQuickOpenOpen]);
+
+  useEffect(() => {
+    setObjectQuickOpenActiveIndex(0);
+    setObjectQuickOpenInteractionMode('keyboard');
+  }, [objectQuickOpenQuery, objectQuickOpenItems]);
+
+  useEffect(() => {
+    if (objectQuickOpenActiveIndex >= visibleObjectQuickOpenItems.length) {
+      setObjectQuickOpenActiveIndex(Math.max(0, visibleObjectQuickOpenItems.length - 1));
+    }
+  }, [visibleObjectQuickOpenItems.length, objectQuickOpenActiveIndex]);
+
+  useEffect(() => {
+    if (!objectQuickOpenOpen || objectQuickOpenInteractionMode !== 'keyboard') {
+      return;
+    }
+
+    const activeOption = quickOpenListRef.current?.querySelector<HTMLElement>(
+      `[data-quick-open-index="${objectQuickOpenActiveIndex}"]`,
+    );
+    activeOption?.scrollIntoView({ block: 'nearest' });
+  }, [objectQuickOpenOpen, objectQuickOpenActiveIndex, objectQuickOpenInteractionMode]);
+
+  useEffect(() => {
+    if (!objectQuickOpenOpen) {
+      return;
+    }
+
+    const sourcesByKey = new Map<string, ObjectQuickOpenSource>();
+    const addSource = (profileID: string, database: string) => {
+      if (!profileID || !database) {
+        return;
+      }
+      const profile = profiles.find((candidate) => candidate.id === profileID);
+      if (!profile) {
+        return;
+      }
+      sourcesByKey.set(`${profileID}:${database}`, {
+        profileID,
+        profileName: profile.name || profile.id,
+        database,
+      });
+    };
+
+    addSource(activeProfileID, selectedDatabase);
+    tabs.forEach((tab) => addSource(tab.profileID, tab.database));
+    objectTabs.forEach((tab) => addSource(tab.node.profileID, tab.node.database ?? ''));
+    collectExplorerDatabaseSources(explorerNodes).forEach((source) => {
+      addSource(source.profileID, source.database);
+    });
+
+    const sources = Array.from(sourcesByKey.values());
+
+    if (sources.length === 0) {
+      setObjectQuickOpenItems([]);
+      setObjectQuickOpenLoading(false);
+      setObjectQuickOpenError('Open or select a connection and database to open objects.');
+      return;
+    }
+
+    let canceled = false;
+    setObjectQuickOpenLoading(true);
+    setObjectQuickOpenError('');
+
+    async function loadQuickOpenObjects() {
+      try {
+        const sourceResults = await Promise.allSettled(
+          sources.map(async (source) => {
+            const schemas = await ListExplorerSchemas(source.profileID, source.database);
+            const objectGroups = await Promise.all(
+              schemas.map(async (schema) => {
+                const objects = await ListExplorerSchemaObjects(source.profileID, source.database, schema.name);
+                return objects
+                  .filter((object): object is domain.ExplorerObject & { kind: ObjectQuickOpenItem['kind'] } =>
+                    isInspectableExplorerObject({
+                      id: '',
+                      label: object.name,
+                      kind: object.kind as ExplorerTreeNodeKind,
+                      profileID: source.profileID,
+                      database: source.database,
+                      schema: object.schema,
+                      objectName: object.name,
+                      expanded: false,
+                      loaded: true,
+                      loading: false,
+                      children: [],
+                    }),
+                  )
+                  .map((object) => ({
+                    id: quickOpenObjectID(source.profileID, source.database, object.schema, object.kind, object.name),
+                    profileID: source.profileID,
+                    profileName: source.profileName,
+                    database: source.database,
+                    schema: object.schema,
+                    name: object.name,
+                    kind: object.kind,
+                  }));
+              }),
+            );
+            return objectGroups.flat();
+          }),
+        );
+
+        if (canceled) {
+          return;
+        }
+
+        const items = sourceResults.flatMap((result) => result.status === 'fulfilled' ? result.value : []);
+        const failedCount = sourceResults.filter((result) => result.status === 'rejected').length;
+        setObjectQuickOpenItems(
+          items
+            .sort((left, right) =>
+              left.profileName.localeCompare(right.profileName) ||
+              left.database.localeCompare(right.database) ||
+              left.schema.localeCompare(right.schema) ||
+              left.name.localeCompare(right.name) ||
+              objectKindLabel(left.kind).localeCompare(objectKindLabel(right.kind)),
+            ),
+        );
+        setObjectQuickOpenError(
+          items.length === 0 && failedCount > 0
+            ? 'Objects could not be loaded from the open connections.'
+            : '',
+        );
+      } catch (err) {
+        if (!canceled) {
+          setObjectQuickOpenItems([]);
+          setObjectQuickOpenError(formatError(err));
+        }
+      } finally {
+        if (!canceled) {
+          setObjectQuickOpenLoading(false);
+        }
+      }
+    }
+
+    void loadQuickOpenObjects();
+
+    return () => {
+      canceled = true;
+    };
+  }, [objectQuickOpenOpen, activeProfileID, selectedDatabase, tabs, objectTabs, explorerNodes, profiles]);
+
+  useEffect(() => {
     if (!activeWorkspaceIsQuery || !activeProfileID || databaseOptionsByProfileID[activeProfileID]?.loading) {
       return;
     }
@@ -616,6 +890,11 @@ export default function App() {
         loading: true,
         error: '',
       },
+    }));
+    updateExplorerNode(explorerNodeID('profile', activeProfileID), (current) => ({
+      ...current,
+      loading: true,
+      error: '',
     }));
 
     async function loadDatabases() {
@@ -632,19 +911,41 @@ export default function App() {
           ...current,
           [activeProfileID]: { databases: databaseNames, loading: false, error: '' },
         }));
+        updateExplorerNode(explorerNodeID('profile', activeProfileID), (current) => ({
+          ...current,
+          loading: false,
+          error: '',
+        }));
         if (activeTab && fallbackDatabase !== activeTab.database) {
           updateTab(activeTab.id, { database: fallbackDatabase });
         }
       } catch (err) {
         if (!canceled) {
+          const message = formatError(err);
+          const profileName = profiles.find((profile) => profile.id === activeProfileID)?.name || activeProfileID;
           setDatabaseOptionsByProfileID((current) => ({
             ...current,
             [activeProfileID]: {
               databases: current[activeProfileID]?.databases ?? [],
               loading: false,
-              error: formatError(err),
+              error: message,
             },
           }));
+          updateExplorerNode(explorerNodeID('profile', activeProfileID), (current) => ({
+            ...current,
+            expanded: false,
+            loaded: false,
+            loading: false,
+            error: message,
+            children: [],
+          }));
+          showErrorToast(`Could not set up connection "${profileName}": ${message}`);
+          if (activeTab?.profileID === activeProfileID) {
+            updateTab(activeTab.id, { profileID: '', database: '' });
+          }
+          if (selectedProfileID === activeProfileID) {
+            setSelectedProfileID('');
+          }
         }
       }
     }
@@ -808,11 +1109,11 @@ export default function App() {
 
   async function refreshProfiles(selectID?: string) {
     const nextProfiles = await ListProfiles();
-    const fallbackID = selectID || nextProfiles[0]?.id || '';
-    const fallbackProfile = nextProfiles.find((profile) => profile.id === fallbackID);
+    const nextSelectedID = selectID && nextProfiles.some((profile) => profile.id === selectID) ? selectID : '';
+    const nextSelectedProfile = nextProfiles.find((profile) => profile.id === nextSelectedID);
     setProfiles(nextProfiles);
     setSelectedProfileID((current) =>
-      selectID || (nextProfiles.some((profile) => profile.id === current) ? current : fallbackID),
+      nextSelectedID || (nextProfiles.some((profile) => profile.id === current) ? current : ''),
     );
     setTabs((current) =>
       current.map((tab) => {
@@ -820,7 +1121,11 @@ export default function App() {
         if (profile) {
           return { ...tab, database: tab.database || profile.database };
         }
-        return { ...tab, profileID: fallbackID, database: fallbackProfile?.database ?? '' };
+        return {
+          ...tab,
+          profileID: nextSelectedID,
+          database: nextSelectedProfile?.database ?? '',
+        };
       }),
     );
     return nextProfiles;
@@ -950,6 +1255,11 @@ export default function App() {
     );
   }
 
+  function showErrorToast(message: string) {
+    toastCounterRef.current += 1;
+    setToast({ id: toastCounterRef.current, message, kind: 'error' });
+  }
+
   function updateObjectTab(
     tabID: string,
     patch: Partial<ObjectInfoTab> | ((tab: ObjectInfoTab) => ObjectInfoTab),
@@ -974,6 +1284,8 @@ export default function App() {
     const profile = profiles.find((candidate) => candidate.id === profileID);
     const databaseNames = databaseOptionsByProfileID[profileID]?.databases ?? [];
     const database = preferredDatabase('', profile?.database ?? '', databaseNames);
+    setGlobalError('');
+    setToast(null);
     setSelectedProfileID(profileID);
     if (activeWorkspaceIsQuery && activeTab) {
       updateTab(activeTab.id, { profileID, database });
@@ -1249,6 +1561,34 @@ export default function App() {
     void loadObjectInfo(tabID, node);
   }
 
+  function openQuickOpenObject(item: ObjectQuickOpenItem) {
+    const node: ExplorerTreeNode = {
+      id: explorerNodeID(
+        'object',
+        item.profileID,
+        item.database,
+        item.schema,
+        item.kind,
+        item.name,
+      ),
+      label: item.name,
+      kind: item.kind,
+      profileID: item.profileID,
+      database: item.database,
+      schema: item.schema,
+      objectName: item.name,
+      expanded: false,
+      loaded: true,
+      loading: false,
+      children: [],
+    };
+
+    setObjectQuickOpenOpen(false);
+    setSelectedProfileID(item.profileID);
+    setSelectedExplorerNodeID(node.id);
+    openObjectInfoTab(node);
+  }
+
   function openLinkedObjectInfo(tab: ObjectInfoTab, target: ObjectLinkTarget) {
     const node: ExplorerTreeNode = {
       id: explorerNodeID(
@@ -1406,11 +1746,15 @@ export default function App() {
         error: '',
       }));
     } catch (err) {
+      const message = formatError(err);
       updateExplorerNode(node.id, (current) => ({
         ...current,
         loading: false,
-        error: formatError(err),
+        error: message,
       }));
+      if (node.kind === 'connection') {
+        showErrorToast(`Could not set up connection "${node.label}": ${message}`);
+      }
     }
   }
 
@@ -1927,11 +2271,124 @@ export default function App() {
           )}
         </section>
       </div>
+      {objectQuickOpenOpen && (
+        <div className="quick-open-backdrop" onMouseDown={() => setObjectQuickOpenOpen(false)}>
+          <section
+            className="quick-open"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Open object"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <div className="quick-open-input-row">
+              <Search size={16} strokeWidth={2} />
+              <input
+                ref={quickOpenInputRef}
+                value={objectQuickOpenQuery}
+                onChange={(event) => setObjectQuickOpenQuery(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Escape') {
+                    event.preventDefault();
+                    setObjectQuickOpenOpen(false);
+                    return;
+                  }
+
+                  if (event.key === 'ArrowDown') {
+                    event.preventDefault();
+                    setObjectQuickOpenInteractionMode('keyboard');
+                    setObjectQuickOpenActiveIndex((current) =>
+                      visibleObjectQuickOpenItems.length === 0
+                        ? 0
+                        : Math.min(current + 1, visibleObjectQuickOpenItems.length - 1),
+                    );
+                    return;
+                  }
+
+                  if (event.key === 'ArrowUp') {
+                    event.preventDefault();
+                    setObjectQuickOpenInteractionMode('keyboard');
+                    setObjectQuickOpenActiveIndex((current) => Math.max(0, current - 1));
+                    return;
+                  }
+
+                  if (event.key === 'Enter') {
+                    event.preventDefault();
+                    const selectedItem = visibleObjectQuickOpenItems[objectQuickOpenActiveIndex];
+                    if (selectedItem) {
+                      openQuickOpenObject(selectedItem);
+                    }
+                  }
+                }}
+                placeholder="Search objects by name, schema, or type"
+                aria-label="Search database objects"
+              />
+            </div>
+            <div
+              ref={quickOpenListRef}
+              className={
+                objectQuickOpenInteractionMode === 'keyboard'
+                  ? 'quick-open-list keyboard-nav'
+                  : 'quick-open-list'
+              }
+              role="listbox"
+            >
+              {objectQuickOpenLoading ? (
+                <div className="quick-open-empty">Loading objects</div>
+              ) : objectQuickOpenError ? (
+                <div className="quick-open-empty error">{objectQuickOpenError}</div>
+              ) : visibleObjectQuickOpenItems.length === 0 ? (
+                <div className="quick-open-empty">No objects found</div>
+              ) : (
+                visibleObjectQuickOpenItems.map((item, index) => {
+                  const Icon = iconForObjectTabKind(item.kind);
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      role="option"
+                      data-quick-open-index={index}
+                      aria-selected={index === objectQuickOpenActiveIndex}
+                      className={index === objectQuickOpenActiveIndex ? 'quick-open-item active' : 'quick-open-item'}
+                      onMouseMove={() => {
+                        setObjectQuickOpenInteractionMode('mouse');
+                        setObjectQuickOpenActiveIndex(index);
+                      }}
+                      onClick={() => openQuickOpenObject(item)}
+                    >
+                      <span className={`quick-open-icon ${item.kind}`}>
+                        <Icon size={16} strokeWidth={1.8} />
+                      </span>
+                      <span className="quick-open-label">
+                        <strong>{item.name}</strong>
+                        <span>{item.schema} - {item.profileName} / {item.database}</span>
+                      </span>
+                      <span className="quick-open-kind">{objectKindLabel(item.kind)}</span>
+                    </button>
+                  );
+                })
+              )}
+            </div>
+          </section>
+        </div>
+      )}
       <StatusBar
         jobs={runningJobItems}
         open={statusPanelOpen}
         onToggle={() => setStatusPanelOpen((current) => !current)}
       />
+      {toast && (
+        <div className={`toast ${toast.kind}`} role="status" aria-live="polite">
+          <span>{toast.message}</span>
+          <button
+            type="button"
+            className="toast-close"
+            aria-label="Dismiss notification"
+            onClick={() => setToast(null)}
+          >
+            <X size={14} strokeWidth={2} />
+          </button>
+        </div>
+      )}
     </main>
   );
 }
