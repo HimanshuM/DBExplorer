@@ -8,6 +8,7 @@ import {
   Minus,
   Play,
   Plus,
+  Save,
   Search,
   Square,
   Trash2,
@@ -35,6 +36,11 @@ import {
   ListSchemaObjects as ListExplorerSchemaObjects,
   ListSchemas as ListExplorerSchemas,
 } from '../wailsjs/go/api/ExplorerAPI';
+import {
+  LoadWorkspace,
+  SaveScript,
+  SaveWorkspace,
+} from '../wailsjs/go/api/ScriptAPI';
 import { domain } from '../wailsjs/go/models';
 import {
   EventsOn,
@@ -257,6 +263,7 @@ const SQL_CLAUSE_KEYWORDS = new Set([
 ]);
 
 const SQL_RELATION_OBJECT_KINDS = new Set(['table', 'view', 'materialized_view']);
+const SCRIPT_AUTOSAVE_DELAY_MS = 500;
 
 const SQL_SEMANTIC_TOKEN_TYPES = ['sqlSchema', 'sqlTable', 'sqlColumn'] as const;
 
@@ -860,6 +867,46 @@ function profileToForm(profile: domain.ConnProfile): ProfileFormState {
   };
 }
 
+function editorTabFromScript(script: domain.ScriptTabState, fallbackIndex: number): EditorTab {
+  const sql = script.sql || '';
+  return {
+    id: script.id || `query_${fallbackIndex}`,
+    title: script.title || `Query ${fallbackIndex}`,
+    path: script.path || '',
+    profileID: script.profileId || '',
+    database: script.database || '',
+    sql,
+    savedSQL: script.savedSql ?? sql,
+    job: null,
+    activeJobID: '',
+    result: { schema: null, rows: null },
+    running: false,
+    error: '',
+  };
+}
+
+function scriptStateFromTab(tab: EditorTab): domain.ScriptTabState {
+  return domain.ScriptTabState.createFrom({
+    id: tab.id,
+    title: tab.title,
+    path: tab.path,
+    sql: tab.sql,
+    savedSql: tab.savedSQL,
+    profileId: tab.profileID,
+    database: tab.database,
+  });
+}
+
+function scriptDefaultFilename(tab: EditorTab) {
+  const base = tab.path.split(/[\\/]/).pop() || tab.title || 'query';
+  return /\.[^./\\]+$/.test(base) ? base : `${base}.sql`;
+}
+
+function queryTabIndex(tabID: string) {
+  const match = /^query_(\d+)$/.exec(tabID);
+  return match ? Number(match[1]) : 0;
+}
+
 export default function App() {
   const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null);
   const sqlCompletionProviderRef = useRef<{ dispose: () => void } | null>(null);
@@ -874,6 +921,9 @@ export default function App() {
   const objectTabsRef = useRef<ObjectInfoTab[]>([]);
   const tabCounterRef = useRef(1);
   const toastCounterRef = useRef(0);
+  const workspaceLoadedRef = useRef(false);
+  const workspaceSaveTimeoutRef = useRef<number | null>(null);
+  const scriptAutosaveTimeoutRef = useRef<number | null>(null);
   const selectedProfileIDRef = useRef('');
   const quickOpenInputRef = useRef<HTMLInputElement | null>(null);
   const quickOpenListRef = useRef<HTMLDivElement | null>(null);
@@ -912,6 +962,7 @@ export default function App() {
   });
   const [objectQuickOpenActiveIndex, setObjectQuickOpenActiveIndex] = useState(0);
   const [objectQuickOpenInteractionMode, setObjectQuickOpenInteractionMode] = useState<'keyboard' | 'mouse'>('keyboard');
+  const [savingScriptID, setSavingScriptID] = useState('');
   const handleRunRef = useRef<() => void>(() => { });
 
   const activeTab = useMemo(
@@ -1045,6 +1096,104 @@ export default function App() {
 
     return () => window.clearTimeout(timeout);
   }, [toast]);
+
+  useEffect(() => {
+    let canceled = false;
+
+    async function loadWorkspace() {
+      try {
+        const workspace = await LoadWorkspace();
+        if (canceled) {
+          return;
+        }
+
+        const restoredTabs = workspace.tabs
+          .map((script, index) => editorTabFromScript(domain.ScriptTabState.createFrom(script), index + 1))
+          .filter((tab) => tab.id);
+        if (restoredTabs.length > 0) {
+          const activeID = restoredTabs.some((tab) => tab.id === workspace.activeTabId)
+            ? workspace.activeTabId
+            : restoredTabs[0].id;
+          setTabs(restoredTabs);
+          setActiveTabID(activeID);
+          setActiveWorkspaceTabID(activeID);
+          tabCounterRef.current = Math.max(1, ...restoredTabs.map((tab) => queryTabIndex(tab.id)));
+        }
+      } catch (err) {
+        showErrorToast(`Could not restore saved scripts: ${formatError(err)}`);
+      } finally {
+        if (!canceled) {
+          workspaceLoadedRef.current = true;
+        }
+      }
+    }
+
+    void loadWorkspace();
+
+    return () => {
+      canceled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!workspaceLoadedRef.current) {
+      return;
+    }
+
+    if (workspaceSaveTimeoutRef.current !== null) {
+      window.clearTimeout(workspaceSaveTimeoutRef.current);
+    }
+
+    workspaceSaveTimeoutRef.current = window.setTimeout(() => {
+      const workspace = domain.ScriptWorkspace.createFrom({
+        tabs: tabsRef.current.map(scriptStateFromTab),
+        activeTabId: activeTabID,
+      });
+      void SaveWorkspace(workspace).catch((err) => {
+        showErrorToast(`Could not remember open scripts: ${formatError(err)}`);
+      });
+      workspaceSaveTimeoutRef.current = null;
+    }, 400);
+
+    return () => {
+      if (workspaceSaveTimeoutRef.current !== null) {
+        window.clearTimeout(workspaceSaveTimeoutRef.current);
+        workspaceSaveTimeoutRef.current = null;
+      }
+    };
+  }, [tabs, activeTabID]);
+
+  useEffect(() => {
+    if (!workspaceLoadedRef.current) {
+      return;
+    }
+
+    const dirtyTabs = tabs.filter((tab) => tab.sql !== tab.savedSQL);
+    if (dirtyTabs.length === 0) {
+      if (scriptAutosaveTimeoutRef.current !== null) {
+        window.clearTimeout(scriptAutosaveTimeoutRef.current);
+        scriptAutosaveTimeoutRef.current = null;
+      }
+      return;
+    }
+
+    if (scriptAutosaveTimeoutRef.current !== null) {
+      window.clearTimeout(scriptAutosaveTimeoutRef.current);
+    }
+
+    scriptAutosaveTimeoutRef.current = window.setTimeout(() => {
+      const currentDirtyTabs = tabsRef.current.filter((tab) => tab.sql !== tab.savedSQL);
+      void Promise.all(currentDirtyTabs.map((tab) => saveEditorTab(tab, false)));
+      scriptAutosaveTimeoutRef.current = null;
+    }, SCRIPT_AUTOSAVE_DELAY_MS);
+
+    return () => {
+      if (scriptAutosaveTimeoutRef.current !== null) {
+        window.clearTimeout(scriptAutosaveTimeoutRef.current);
+        scriptAutosaveTimeoutRef.current = null;
+      }
+    };
+  }, [tabs]);
 
   useEffect(() => {
     function handleGlobalKeyDown(event: KeyboardEvent) {
@@ -1769,6 +1918,51 @@ export default function App() {
     }
   }
 
+  async function saveEditorTab(tab: EditorTab, chooseLocation: boolean) {
+    if (!chooseLocation && tab.sql === tab.savedSQL) {
+      return;
+    }
+
+    if (scriptAutosaveTimeoutRef.current !== null) {
+      window.clearTimeout(scriptAutosaveTimeoutRef.current);
+      scriptAutosaveTimeoutRef.current = null;
+    }
+
+    setSavingScriptID(tab.id);
+    try {
+      const response = await SaveScript(domain.SaveScriptRequest.createFrom({
+        path: chooseLocation ? '' : tab.path,
+        title: tab.title,
+        sql: tab.sql,
+        profileId: tab.profileID,
+        database: tab.database,
+        chooseLocation,
+        defaultFilename: scriptDefaultFilename(tab),
+      }));
+
+      if (!response.path && chooseLocation) {
+        return;
+      }
+
+      updateTab(tab.id, {
+        path: response.path || tab.path,
+        title: response.title || tab.title,
+        savedSQL: tab.sql,
+        error: '',
+      });
+    } catch (err) {
+      updateTab(tab.id, { error: formatError(err) });
+    } finally {
+      setSavingScriptID('');
+    }
+  }
+
+  function handleSaveActiveScriptAs() {
+    if (activeWorkspaceIsQuery && activeTab) {
+      void saveEditorTab(activeTab, true);
+    }
+  }
+
   function addEditorTab() {
     const nextIndex = tabCounterRef.current + 1;
     tabCounterRef.current = nextIndex;
@@ -2440,7 +2634,7 @@ export default function App() {
                 }}
               >
                 <span className="tab-icon"><FileCode2 size={15} strokeWidth={1.8} /></span>
-                <span>{tab.title}</span>
+                <span>{tab.title}{tab.sql !== tab.savedSQL ? ' *' : ''}</span>
                 {tab.running && <span className="tab-dot" />}
                 {tabs.length > 1 && (
                   <span
@@ -2666,6 +2860,15 @@ export default function App() {
               >
                 <Square size={14} strokeWidth={2} />
                 <span>Cancel</span>
+              </button>
+              <button
+                type="button"
+                onClick={handleSaveActiveScriptAs}
+                disabled={!activeWorkspaceIsQuery || !activeTab || savingScriptID === activeTab.id}
+                title="Save script to another location"
+              >
+                <Save size={15} strokeWidth={2} />
+                <span>Save As</span>
               </button>
             </div>
             <div className="top-bar-connection">

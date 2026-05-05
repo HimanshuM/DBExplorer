@@ -27,7 +27,7 @@ var appIcon []byte
 
 func main() {
 	app := NewApp()
-	connectionAPI, queryAPI, explorerAPI := buildAPIs(app)
+	connectionAPI, queryAPI, explorerAPI, scriptAPI := buildAPIs(app)
 
 	err := wails.Run(&options.App{
 		Title:     "DB Explorer",
@@ -51,6 +51,7 @@ func main() {
 			connectionAPI,
 			queryAPI,
 			explorerAPI,
+			scriptAPI,
 		},
 	})
 	if err != nil {
@@ -58,7 +59,7 @@ func main() {
 	}
 }
 
-func buildAPIs(app *App) (*api.ConnectionAPI, *api.QueryAPI, *api.ExplorerAPI) {
+func buildAPIs(app *App) (*api.ConnectionAPI, *api.QueryAPI, *api.ExplorerAPI, *api.ScriptAPI) {
 	registry := driver.NewRegistry()
 	if err := registry.Register(postgres.NewFactory(
 		postgres.WithFactoryJobEventEmitter(NewWailsJobEventEmitter(app)),
@@ -76,8 +77,9 @@ func buildAPIs(app *App) (*api.ConnectionAPI, *api.QueryAPI, *api.ExplorerAPI) {
 	connectionService := service.NewConnectionServiceWithStore(registry, profiles, profileStore)
 	queryService := service.NewQueryService(registry, profiles)
 	explorerService := service.NewExplorerService(registry, profiles)
+	scriptStore := service.NewScriptStore(scriptWorkspacePath(), scriptDefaultDir())
 
-	return api.NewConnectionAPI(connectionService), api.NewQueryAPI(queryService), api.NewExplorerAPI(explorerService)
+	return api.NewConnectionAPI(connectionService), api.NewQueryAPI(queryService), api.NewExplorerAPI(explorerService), api.NewScriptAPI(scriptStore, app.context)
 }
 
 func profileStorePath() string {
@@ -86,4 +88,20 @@ func profileStorePath() string {
 		return filepath.Join(".", "profiles.json")
 	}
 	return filepath.Join(configDir, "db-explorer", "profiles.json")
+}
+
+func scriptWorkspacePath() string {
+	configDir, err := os.UserConfigDir()
+	if err != nil || configDir == "" {
+		return filepath.Join(".", "workspace.json")
+	}
+	return filepath.Join(configDir, "db-explorer", "workspace.json")
+}
+
+func scriptDefaultDir() string {
+	configDir, err := os.UserConfigDir()
+	if err != nil || configDir == "" {
+		return filepath.Join(".", "scripts")
+	}
+	return filepath.Join(configDir, "db-explorer", "scripts")
 }

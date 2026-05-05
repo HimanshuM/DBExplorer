@@ -21,9 +21,11 @@ export type JobResultSetEvent = {
 export type EditorTab = {
   id: string;
   title: string;
+  path: string;
   profileID: string;
   database: string;
   sql: string;
+  savedSQL: string;
   job: domain.JobSummary | null;
   activeJobID: string;
   result: ResultState;
