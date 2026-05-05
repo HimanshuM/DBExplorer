@@ -13,7 +13,7 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
-import type { editor } from 'monaco-editor';
+import type { editor, languages } from 'monaco-editor';
 import { KeyCode, KeyMod } from 'monaco-editor';
 import {
   CancelJob,
@@ -30,6 +30,7 @@ import {
 } from '../wailsjs/go/api/ConnectionAPI';
 import {
   GetObjectInfo,
+  GetTableInfo,
   ListDatabases as ListExplorerDatabases,
   ListSchemaObjects as ListExplorerSchemaObjects,
   ListSchemas as ListExplorerSchemas,
@@ -98,6 +99,32 @@ type ObjectQuickOpenSource = {
   profileID: string;
   profileName: string;
   database: string;
+};
+
+type SQLCompletionObject = {
+  schema: string;
+  name: string;
+  kind: Extract<ExplorerTreeNodeKind, 'table' | 'view' | 'materialized_view' | 'sequence' | 'function' | 'type'>;
+};
+
+type SQLCompletionData = {
+  profileID: string;
+  database: string;
+  objects: SQLCompletionObject[];
+  schemas: string[];
+};
+
+type SQLCompletionColumn = {
+  table: string;
+  schema: string;
+  name: string;
+  dataType: string;
+};
+
+type SQLReferencedRelation = {
+  schema: string;
+  name: string;
+  alias: string;
 };
 
 const SQL_KEYWORDS = new Set([
@@ -175,6 +202,61 @@ const SQL_KEYWORDS = new Set([
   'where',
   'with',
 ]);
+
+const SQL_FUNCTIONS = [
+  'abs',
+  'avg',
+  'coalesce',
+  'concat',
+  'count',
+  'date_trunc',
+  'extract',
+  'greatest',
+  'json_agg',
+  'json_build_object',
+  'least',
+  'lower',
+  'max',
+  'min',
+  'now',
+  'nullif',
+  'round',
+  'substring',
+  'sum',
+  'to_char',
+  'trim',
+  'upper',
+];
+
+const SQL_OBJECT_CONTEXT_KEYWORDS = new Set([
+  'from',
+  'join',
+  'into',
+  'update',
+  'references',
+  'table',
+]);
+
+const SQL_CLAUSE_KEYWORDS = new Set([
+  'select',
+  'from',
+  'join',
+  'where',
+  'on',
+  'having',
+  'group',
+  'order',
+  'limit',
+  'offset',
+  'returning',
+  'set',
+  'values',
+  'union',
+  'except',
+  'intersect',
+]);
+
+const SQL_RELATION_OBJECT_KINDS = new Set(['table', 'view', 'materialized_view']);
 
 const SQL_SEMANTIC_TOKEN_TYPES = ['sqlSchema', 'sqlTable', 'sqlColumn'] as const;
 
@@ -395,6 +477,191 @@ function tokenizeSQLForSemanticColors(value: string) {
   return tokens;
 }
 
+function inferSQLCompletionContext(tokens: SQLParsedToken[]): 'keyword' | 'object' | 'function' | 'column' {
+  const significantTokens = tokens.filter((token) => token.kind !== 'dot');
+  const lastToken = significantTokens[significantTokens.length - 1];
+  const lastValue = lastToken?.value.toLowerCase() ?? '';
+  const previousToken = significantTokens[significantTokens.length - 2];
+  const previousValue = previousToken?.value.toLowerCase() ?? '';
+  const rawLastToken = tokens[tokens.length - 1];
+
+  if (rawLastToken?.kind === 'dot') {
+    return 'object';
+  }
+
+  if (lastToken?.kind === 'keyword' && SQL_OBJECT_CONTEXT_KEYWORDS.has(lastValue)) {
+    return 'object';
+  }
+
+  if (
+    lastToken?.kind === 'keyword' &&
+    previousToken?.kind === 'keyword' &&
+    ['full', 'inner', 'left', 'right', 'cross'].includes(previousValue) &&
+    lastValue === 'join'
+  ) {
+    return 'object';
+  }
+
+  let clause: string | null = null;
+  for (const token of significantTokens) {
+    const value = token.value.toLowerCase();
+    if (token.kind === 'keyword' && SQL_CLAUSE_KEYWORDS.has(value)) {
+      clause = value;
+    }
+  }
+
+  if (clause === 'from' || clause === 'join') {
+    return lastToken?.kind === 'comma' ? 'object' : 'keyword';
+  }
+
+  if (clause === 'where' || clause === 'on' || clause === 'having' || clause === 'returning') {
+    return 'column';
+  }
+
+  if (clause === 'select') {
+    return 'function';
+  }
+
+  return 'keyword';
+}
+
+function getSQLCompletionContext(
+  model: editor.ITextModel,
+  position: { lineNumber: number; column: number },
+) {
+  const line = model.getLineContent(position.lineNumber);
+  const word = model.getWordUntilPosition(position);
+
+  if (isInsideSimpleSQLStringOrLineComment(line, word.startColumn)) {
+    return null;
+  }
+
+  const textBeforeWord = model.getValueInRange({
+    startLineNumber: 1,
+    startColumn: 1,
+    endLineNumber: position.lineNumber,
+    endColumn: word.startColumn,
+  });
+
+  return inferSQLCompletionContext(tokenizeSQLForSemanticColors(textBeforeWord));
+}
+
+function tokenIsKeyword(token: SQLParsedToken | undefined, keyword: string) {
+  return token?.kind === 'keyword' && token.value.toLowerCase() === keyword;
+}
+
+function tokenIsClauseBoundary(token: SQLParsedToken | undefined) {
+  if (token?.kind !== 'keyword') {
+    return false;
+  }
+  const value = token.value.toLowerCase();
+  return SQL_CLAUSE_KEYWORDS.has(value) || ['as', 'inner', 'left', 'right', 'full', 'cross', 'outer'].includes(value);
+}
+
+function matchSQLCompletionObject(
+  completionData: SQLCompletionData,
+  parts: string[],
+): SQLCompletionObject | null {
+  if (parts.length === 0) {
+    return null;
+  }
+
+  const name = parts[parts.length - 1];
+  const schema = parts.length >= 2 ? parts[parts.length - 2] : '';
+  const candidates = completionData.objects.filter((object) =>
+    SQL_RELATION_OBJECT_KINDS.has(object.kind) &&
+    object.name.toLowerCase() === name.toLowerCase() &&
+    (!schema || object.schema.toLowerCase() === schema.toLowerCase()),
+  );
+
+  return (
+    candidates.find((object) => object.schema === 'public') ??
+    candidates[0] ??
+    null
+  );
+}
+
+function collectReferencedSQLRelations(
+  tokens: SQLParsedToken[],
+  completionData: SQLCompletionData,
+): SQLReferencedRelation[] {
+  const relations: SQLReferencedRelation[] = [];
+  let relationListActive = false;
+
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    const value = token.value.toLowerCase();
+    if (token.kind === 'keyword') {
+      if (['from', 'join', 'update', 'into'].includes(value)) {
+        relationListActive = true;
+      } else if (SQL_CLAUSE_KEYWORDS.has(value) && value !== 'join') {
+        relationListActive = false;
+      }
+    }
+    const introducesRelation =
+      (token.kind === 'keyword' && ['from', 'join', 'update', 'into'].includes(value)) ||
+      (token.kind === 'comma' && relationListActive && relations.length > 0);
+
+    if (!introducesRelation) {
+      continue;
+    }
+
+    let partIndex = index + 1;
+    while (tokenIsKeyword(tokens[partIndex], 'as')) {
+      partIndex += 1;
+    }
+    if (tokens[partIndex]?.kind !== 'identifier') {
+      continue;
+    }
+
+    const parts: string[] = [];
+    while (tokens[partIndex]?.kind === 'identifier') {
+      parts.push(tokens[partIndex].value);
+      if (tokens[partIndex + 1]?.kind !== 'dot' || tokens[partIndex + 2]?.kind !== 'identifier') {
+        break;
+      }
+      partIndex += 2;
+    }
+
+    const object = matchSQLCompletionObject(completionData, parts);
+    if (!object) {
+      continue;
+    }
+
+    let alias = '';
+    const aliasCandidateIndex = partIndex + 1;
+    if (tokenIsKeyword(tokens[aliasCandidateIndex], 'as') && tokens[aliasCandidateIndex + 1]?.kind === 'identifier') {
+      alias = tokens[aliasCandidateIndex + 1].value;
+    } else if (
+      tokens[aliasCandidateIndex]?.kind === 'identifier' &&
+      !tokenIsClauseBoundary(tokens[aliasCandidateIndex])
+    ) {
+      alias = tokens[aliasCandidateIndex].value;
+    }
+
+    relations.push({ schema: object.schema, name: object.name, alias });
+    index = partIndex;
+  }
+
+  return relations;
+}
+
+function getSQLReferencedRelations(
+  model: editor.ITextModel,
+  position: { lineNumber: number; column: number },
+  completionData: SQLCompletionData,
+) {
+  const word = model.getWordUntilPosition(position);
+  const textBeforeWord = model.getValueInRange({
+    startLineNumber: 1,
+    startColumn: 1,
+    endLineNumber: position.lineNumber,
+    endColumn: word.startColumn,
+  });
+
+  return collectReferencedSQLRelations(tokenizeSQLForSemanticColors(textBeforeWord), completionData);
+}
+
 function tokenKey(token: SQLIdentifierToken) {
   return `${token.lineNumber}:${token.startColumn}`;
 }
@@ -595,6 +862,14 @@ function profileToForm(profile: domain.ConnProfile): ProfileFormState {
 
 export default function App() {
   const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null);
+  const sqlCompletionProviderRef = useRef<{ dispose: () => void } | null>(null);
+  const sqlColumnCompletionCacheRef = useRef<Map<string, SQLCompletionColumn[]>>(new Map());
+  const sqlCompletionDataRef = useRef<SQLCompletionData>({
+    profileID: '',
+    database: '',
+    objects: [],
+    schemas: [],
+  });
   const tabsRef = useRef<EditorTab[]>([]);
   const objectTabsRef = useRef<ObjectInfoTab[]>([]);
   const tabCounterRef = useRef(1);
@@ -629,6 +904,12 @@ export default function App() {
   const [objectQuickOpenItems, setObjectQuickOpenItems] = useState<ObjectQuickOpenItem[]>([]);
   const [objectQuickOpenLoading, setObjectQuickOpenLoading] = useState(false);
   const [objectQuickOpenError, setObjectQuickOpenError] = useState('');
+  const [sqlCompletionData, setSQLCompletionData] = useState<SQLCompletionData>({
+    profileID: '',
+    database: '',
+    objects: [],
+    schemas: [],
+  });
   const [objectQuickOpenActiveIndex, setObjectQuickOpenActiveIndex] = useState(0);
   const [objectQuickOpenInteractionMode, setObjectQuickOpenInteractionMode] = useState<'keyboard' | 'mouse'>('keyboard');
   const handleRunRef = useRef<() => void>(() => { });
@@ -690,6 +971,68 @@ export default function App() {
   useEffect(() => {
     selectedProfileIDRef.current = activeProfileID;
   }, [activeProfileID]);
+
+  useEffect(() => () => {
+    sqlCompletionProviderRef.current?.dispose();
+    sqlCompletionProviderRef.current = null;
+  }, []);
+
+  useEffect(() => {
+    sqlCompletionDataRef.current = sqlCompletionData;
+    sqlColumnCompletionCacheRef.current.clear();
+  }, [sqlCompletionData]);
+
+  useEffect(() => {
+    if (!activeWorkspaceIsQuery || !activeProfileID || !selectedDatabase) {
+      setSQLCompletionData({ profileID: activeProfileID, database: selectedDatabase, objects: [], schemas: [] });
+      return;
+    }
+
+    let canceled = false;
+
+    async function loadSQLCompletionData() {
+      try {
+        const schemas = await ListExplorerSchemas(activeProfileID, selectedDatabase);
+        const objectGroups = await Promise.all(
+          schemas.map(async (schema) => {
+            const objects = await ListExplorerSchemaObjects(activeProfileID, selectedDatabase, schema.name);
+            return objects
+              .filter((object): object is domain.ExplorerObject & { kind: SQLCompletionObject['kind'] } =>
+                ['table', 'view', 'materialized_view', 'sequence', 'function', 'type'].includes(object.kind),
+              )
+              .map((object) => ({
+                schema: object.schema,
+                name: object.name,
+                kind: object.kind,
+              }));
+          }),
+        );
+
+        if (!canceled) {
+          setSQLCompletionData({
+            profileID: activeProfileID,
+            database: selectedDatabase,
+            objects: objectGroups.flat().sort((left, right) =>
+              left.schema.localeCompare(right.schema) ||
+              left.name.localeCompare(right.name) ||
+              objectKindLabel(left.kind).localeCompare(objectKindLabel(right.kind)),
+            ),
+            schemas: schemas.map((schema) => schema.name).sort((left, right) => left.localeCompare(right)),
+          });
+        }
+      } catch {
+        if (!canceled) {
+          setSQLCompletionData({ profileID: activeProfileID, database: selectedDatabase, objects: [], schemas: [] });
+        }
+      }
+    }
+
+    void loadSQLCompletionData();
+
+    return () => {
+      canceled = true;
+    };
+  }, [activeWorkspaceIsQuery, activeProfileID, selectedDatabase]);
 
   useEffect(() => {
     if (!toast) {
@@ -1165,7 +1508,135 @@ export default function App() {
     };
   }, []);
 
+  async function loadSQLColumnCompletions(
+    completionData: SQLCompletionData,
+    relations: SQLReferencedRelation[],
+  ) {
+    const uniqueRelations = Array.from(
+      new Map(relations.map((relation) => [`${relation.schema}.${relation.name}`, relation])).values(),
+    );
+    const columnGroups = await Promise.all(
+      uniqueRelations.map(async (relation) => {
+        const cacheKey = [
+          completionData.profileID,
+          completionData.database,
+          relation.schema,
+          relation.name,
+        ].join(':');
+        const cachedColumns = sqlColumnCompletionCacheRef.current.get(cacheKey);
+        if (cachedColumns) {
+          return cachedColumns;
+        }
+
+        const tableInfo = await GetTableInfo(
+          completionData.profileID,
+          completionData.database,
+          relation.schema,
+          relation.name,
+        );
+        const columns = tableInfo.columns.map((column) => ({
+          table: relation.alias || relation.name,
+          schema: relation.schema,
+          name: column.name,
+          dataType: column.dataType,
+        }));
+        sqlColumnCompletionCacheRef.current.set(cacheKey, columns);
+        return columns;
+      }),
+    );
+
+    const dedupedColumns = new Map<string, SQLCompletionColumn>();
+    columnGroups.flat().forEach((column) => {
+      const key = `${column.table}.${column.name}.${column.dataType}`;
+      if (!dedupedColumns.has(key)) {
+        dedupedColumns.set(key, column);
+      }
+    });
+    return Array.from(dedupedColumns.values()).sort((left, right) =>
+      left.name.localeCompare(right.name) ||
+      left.table.localeCompare(right.table),
+    );
+  }
+
   const handleEditorBeforeMount: BeforeMount = (monaco) => {
+    sqlCompletionProviderRef.current?.dispose();
+    sqlCompletionProviderRef.current = monaco.languages.registerCompletionItemProvider('sql', {
+      triggerCharacters: ['.', ' '],
+      provideCompletionItems: async (model, position) => {
+        const context = getSQLCompletionContext(model, position);
+        if (!context) {
+          return { suggestions: [] };
+        }
+
+        const word = model.getWordUntilPosition(position);
+        const range = {
+          startLineNumber: position.lineNumber,
+          endLineNumber: position.lineNumber,
+          startColumn: word.startColumn,
+          endColumn: word.endColumn,
+        };
+        const completionData = sqlCompletionDataRef.current;
+        const keywordSuggestions = Array.from(SQL_KEYWORDS)
+          .sort((left, right) => left.localeCompare(right))
+          .map<languages.CompletionItem>((keyword) => ({
+            label: keyword.toUpperCase(),
+            kind: monaco.languages.CompletionItemKind.Keyword,
+            insertText: keyword.toUpperCase(),
+            range,
+          }));
+        const functionSuggestions = SQL_FUNCTIONS.map<languages.CompletionItem>((functionName) => ({
+          label: functionName,
+          kind: monaco.languages.CompletionItemKind.Function,
+          insertText: `${functionName}($0)`,
+          insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+          range,
+        }));
+        const schemaSuggestions = completionData.schemas.map<languages.CompletionItem>((schema) => ({
+          label: schema,
+          kind: monaco.languages.CompletionItemKind.Module,
+          detail: 'schema',
+          insertText: quoteIdentifier(schema),
+          range,
+        }));
+        const objectSuggestions = completionData.objects.map<languages.CompletionItem>((object) => ({
+          label: object.name,
+          kind:
+            object.kind === 'function'
+              ? monaco.languages.CompletionItemKind.Function
+              : object.kind === 'type'
+                ? monaco.languages.CompletionItemKind.Class
+                : monaco.languages.CompletionItemKind.Struct,
+          detail: `${object.schema} - ${objectKindLabel(object.kind).toLowerCase()}`,
+          insertText: quoteIdentifier(object.name),
+          range,
+        }));
+        const relations = getSQLReferencedRelations(model, position, completionData);
+        const columnSuggestions = context === 'column'
+          ? (await loadSQLColumnCompletions(completionData, relations)).map<languages.CompletionItem>((column) => ({
+            label: column.name,
+            kind: monaco.languages.CompletionItemKind.Field,
+            detail: `${column.table} - ${column.dataType}`,
+            insertText: quoteIdentifier(column.name),
+            range,
+          }))
+          : [];
+
+        if (context === 'object') {
+          return { suggestions: [...schemaSuggestions, ...objectSuggestions] };
+        }
+
+        if (context === 'column') {
+          return { suggestions: [...columnSuggestions, ...functionSuggestions, ...keywordSuggestions] };
+        }
+
+        if (context === 'function') {
+          return { suggestions: [...functionSuggestions, ...keywordSuggestions] };
+        }
+
+        return { suggestions: keywordSuggestions };
+      },
+    });
+
     monaco.editor.defineTheme('db-explorer-dark', {
       base: 'vs-dark',
       inherit: true,
