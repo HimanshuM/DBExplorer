@@ -54,7 +54,14 @@ export type JobStatusItem = {
   label: string;
   status: string;
   database?: string;
+  profileID?: string;
+  profileName?: string;
   jobID: string;
+  startedAt?: number;
+  endedAt?: number;
+  error?: string;
+  resultSetCount?: number;
+  active: boolean;
 };
 
 export type ExplorerTreeNodeKind =

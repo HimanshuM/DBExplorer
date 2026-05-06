@@ -1,4 +1,5 @@
 import { domain } from '../wailsjs/go/models';
+import { formatDuration } from './format';
 
 export function ResultTable({
   schema,
@@ -37,11 +38,13 @@ export function ResultTable({
   );
 }
 
-export function resultLabel(rows: domain.GetRowsResponse) {
+export function resultLabel(rows: domain.GetRowsResponse, job?: domain.JobSummary | null) {
+  const duration = formatDuration(job?.startedAt, job?.endedAt);
+  const durationSuffix = duration ? ` in ${duration}` : '';
   if (rows.rowCountKnown) {
-    return `Results: ${rows.rowCount} rows`;
+    return `Results: ${rows.rowCount} rows${durationSuffix}`;
   }
-  return `Results: ${rows.rows.length} loaded`;
+  return `Results: ${rows.rows.length} loaded${durationSuffix}`;
 }
 
 function formatCell(value: unknown) {

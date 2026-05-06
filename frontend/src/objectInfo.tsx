@@ -114,7 +114,7 @@ function ObjectInfoContent({
     return (
       <div className="object-info object-data">
         <div className="object-data-toolbar">
-          <span>{tab.data.rows ? resultLabel(tab.data.rows) : 'Data preview'}</span>
+          <span>{tab.data.rows ? resultLabel(tab.data.rows, tab.dataJob) : 'Data preview'}</span>
           <ClearableInput
             value={tab.dataFilter}
             onChange={onDataFilterChange}

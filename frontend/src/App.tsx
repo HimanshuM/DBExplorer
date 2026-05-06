@@ -65,7 +65,7 @@ import { ObjectInfoWorkspace, objectKindLabel, type ObjectLinkTarget } from './o
 import { createEditorTab, terminalStatuses } from './queryTabs';
 import { ResultTable, resultLabel } from './resultTable';
 import { getSQLExecutionTarget } from './sqlSelection';
-import { StatusBar, collectRunningJobStatusItems } from './statusBar';
+import { StatusBar, collectJobStatusItems } from './statusBar';
 import { ConnectionDropdown, DatabaseDropdown } from './connectionDropdown';
 import { LayoutPaneIcon, iconForObjectTabKind } from './objectIcons';
 import {
@@ -106,6 +106,8 @@ import {
   type SQLReferencedRelation,
   uppercaseSQLKeywordBeforePosition,
 } from './app/sqlLanguage';
+
+const RESULT_PREVIEW_ROW_LIMIT = 100;
 
 export default function App() {
   const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null);
@@ -194,13 +196,71 @@ export default function App() {
     !activeProfileID ||
     (databaseOptionsState?.loading && databaseOptions.length === 0) ||
     databaseOptions.length === 0;
+  const connectionStatus = useMemo(() => {
+    if (loadingProfiles) {
+      return {
+        label: 'Loading',
+        detail: 'Loading saved connections',
+        kind: 'pending',
+      };
+    }
+
+    if (!selectedProfile) {
+      return {
+        label: 'No connection',
+        detail: 'Select a connection profile',
+        kind: 'idle',
+      };
+    }
+
+    if (databaseOptionsState?.loading || (!databaseOptionsState && activeWorkspaceIsQuery)) {
+      return {
+        label: 'Connecting',
+        detail: `Setting up ${selectedProfile.name || selectedProfile.id}`,
+        kind: 'pending',
+      };
+    }
+
+    if (databaseOptionsState?.error) {
+      return {
+        label: 'Connection error',
+        detail: databaseOptionsState.error,
+        kind: 'error',
+      };
+    }
+
+    return {
+      label: 'Connected',
+      detail: `${selectedProfile.name || selectedProfile.id}${selectedDatabase ? ` / ${selectedDatabase}` : ''}`,
+      kind: 'connected',
+    };
+  }, [activeWorkspaceIsQuery, databaseOptionsState, loadingProfiles, selectedDatabase, selectedProfile]);
+  const runDisabledReason = useMemo(() => {
+    if (!activeWorkspaceIsQuery) {
+      return 'Open a query tab to run SQL.';
+    }
+    if (!activeTab) {
+      return 'Open a query tab to run SQL.';
+    }
+    if (activeTab.running) {
+      return 'A query is already running in this tab.';
+    }
+    if (connectionStatus.kind !== 'connected') {
+      return connectionStatus.detail || 'Connection is not active.';
+    }
+    if (!selectedDatabase) {
+      return 'Select a database before running a query.';
+    }
+    return '';
+  }, [activeTab, activeWorkspaceIsQuery, connectionStatus, selectedDatabase]);
+  const runButtonDisabled = Boolean(runDisabledReason);
 
   const visibleResult = activeTab?.result ?? { schema: null, rows: null };
   const visibleError = activeTab?.error || activeTab?.job?.error?.message || globalError;
   const status = activeTab?.job?.status ?? 'idle';
-  const runningJobItems = useMemo(
-    () => collectRunningJobStatusItems(tabs, objectTabs),
-    [tabs, objectTabs],
+  const jobStatusItems = useMemo(
+    () => collectJobStatusItems(tabs, objectTabs, profiles, activeWorkspaceTabID),
+    [tabs, objectTabs, profiles, activeWorkspaceTabID],
   );
   const filteredObjectQuickOpenItems = useMemo(
     () => filterObjectQuickOpenItems(objectQuickOpenItems, objectQuickOpenQuery),
@@ -1359,6 +1419,7 @@ export default function App() {
           },
         ],
         mode: target.mode,
+        limit: RESULT_PREVIEW_ROW_LIMIT,
         readOnly: true,
       }));
 
@@ -1546,6 +1607,7 @@ export default function App() {
         sql,
         statements: [{ startOffset: 0, endOffset: sql.length, text: sql }],
         mode: 'statement',
+        limit: RESULT_PREVIEW_ROW_LIMIT,
         readOnly: true,
       }));
 
@@ -1706,7 +1768,7 @@ export default function App() {
           jobId: completedJob.jobId,
           resultSetId: resultSetID,
           start: 0,
-          count: 100,
+          count: RESULT_PREVIEW_ROW_LIMIT,
         })),
       ]);
 
@@ -1733,7 +1795,7 @@ export default function App() {
           jobId: completedJob.jobId,
           resultSetId: resultSetID,
           start: 0,
-          count: 100,
+          count: RESULT_PREVIEW_ROW_LIMIT,
         })),
       ]);
 
@@ -2067,7 +2129,8 @@ export default function App() {
               <button
                 type="button"
                 onClick={handleRun}
-                disabled={!activeWorkspaceIsQuery || activeTab?.running || profiles.length === 0}
+                disabled={runButtonDisabled}
+                title={runDisabledReason || 'Run query'}
               >
                 <Play size={15} strokeWidth={2} />
                 <span>Run</span>
@@ -2105,6 +2168,10 @@ export default function App() {
                 error={databaseOptionsState?.error ?? ''}
                 onChange={updateActiveDatabase}
               />
+              <div className={`connection-status ${connectionStatus.kind}`} title={connectionStatus.detail}>
+                <span className="connection-status-dot" />
+                <span>{connectionStatus.label}</span>
+              </div>
             </div>
             <div className="top-bar-spacer" />
           </header>
@@ -2148,7 +2215,7 @@ export default function App() {
           {resultsPaneOpen && (
             <section className="results-region">
               <header className="pane-header">
-                <span>{visibleResult.rows ? resultLabel(visibleResult.rows) : 'Results'}</span>
+                <span>{visibleResult.rows ? resultLabel(visibleResult.rows, activeTab?.job) : 'Results'}</span>
                 <span className={`status-pill ${status}`}>{status}</span>
               </header>
               {visibleError ? (
@@ -2265,7 +2332,7 @@ export default function App() {
         </div>
       )}
       <StatusBar
-        jobs={runningJobItems}
+        jobs={jobStatusItems}
         open={statusPanelOpen}
         onToggle={() => setStatusPanelOpen((current) => !current)}
       />
