@@ -1,4 +1,12 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import Editor, { type BeforeMount, type OnMount } from '@monaco-editor/react';
 import {
   ChevronsDownUp,
@@ -108,6 +116,44 @@ import {
 } from './app/sqlLanguage';
 
 const RESULT_PREVIEW_ROW_LIMIT = 100;
+const DEFAULT_EXPLORER_PANE_WIDTH = 280;
+const MIN_EXPLORER_PANE_WIDTH = 180;
+const MIN_WORKSPACE_WIDTH = 420;
+const DEFAULT_RESULTS_PANE_HEIGHT = 280;
+const MIN_RESULTS_PANE_HEIGHT = 140;
+const MIN_EDITOR_HEIGHT = 180;
+const RESIZE_KEYBOARD_STEP = 16;
+const PANE_SIZE_STORAGE_KEY = 'db-explorer:pane-sizes:v1';
+
+function clamp(value: number, minimum: number, maximum: number) {
+  return Math.min(Math.max(value, minimum), maximum);
+}
+
+function readStoredPaneSizes() {
+  try {
+    const stored = window.localStorage.getItem(PANE_SIZE_STORAGE_KEY);
+    if (!stored) {
+      return null;
+    }
+
+    const parsed = JSON.parse(stored) as Partial<{
+      explorerPaneWidth: unknown;
+      resultsPaneHeight: unknown;
+    }>;
+    const maxExplorerPaneWidth = Math.max(MIN_EXPLORER_PANE_WIDTH, window.innerWidth - MIN_WORKSPACE_WIDTH);
+    const maxResultsPaneHeight = Math.max(MIN_RESULTS_PANE_HEIGHT, window.innerHeight - MIN_EDITOR_HEIGHT - 66);
+    return {
+      explorerPaneWidth: typeof parsed.explorerPaneWidth === 'number'
+        ? clamp(parsed.explorerPaneWidth, MIN_EXPLORER_PANE_WIDTH, maxExplorerPaneWidth)
+        : DEFAULT_EXPLORER_PANE_WIDTH,
+      resultsPaneHeight: typeof parsed.resultsPaneHeight === 'number'
+        ? clamp(parsed.resultsPaneHeight, MIN_RESULTS_PANE_HEIGHT, maxResultsPaneHeight)
+        : DEFAULT_RESULTS_PANE_HEIGHT,
+    };
+  } catch {
+    return null;
+  }
+}
 
 export default function App() {
   const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null);
@@ -147,6 +193,13 @@ export default function App() {
   const [windowMaximized, setWindowMaximized] = useState(false);
   const [explorerPaneOpen, setExplorerPaneOpen] = useState(true);
   const [resultsPaneOpen, setResultsPaneOpen] = useState(true);
+  const [explorerPaneWidth, setExplorerPaneWidth] = useState(
+    () => readStoredPaneSizes()?.explorerPaneWidth ?? DEFAULT_EXPLORER_PANE_WIDTH,
+  );
+  const [resultsPaneHeight, setResultsPaneHeight] = useState(
+    () => readStoredPaneSizes()?.resultsPaneHeight ?? DEFAULT_RESULTS_PANE_HEIGHT,
+  );
+  const [activeResizeHandle, setActiveResizeHandle] = useState<'explorer' | 'results' | null>(null);
   const [explorerNodes, setExplorerNodes] = useState<ExplorerTreeNode[]>([]);
   const [selectedExplorerNodeID, setSelectedExplorerNodeID] = useState('');
   const [statusPanelOpen, setStatusPanelOpen] = useState(false);
@@ -254,6 +307,21 @@ export default function App() {
     return '';
   }, [activeTab, activeWorkspaceIsQuery, connectionStatus, selectedDatabase]);
   const runButtonDisabled = Boolean(runDisabledReason);
+  const appBodyStyle = explorerPaneOpen
+    ? ({
+      '--explorer-pane-width': `${explorerPaneWidth}px`,
+    } as CSSProperties)
+    : undefined;
+  const appBodyClassName = [
+    'app-body',
+    explorerPaneOpen ? '' : 'explorer-collapsed',
+    activeResizeHandle ? `resizing-${activeResizeHandle}` : '',
+  ].filter(Boolean).join(' ');
+  const workspaceStyle = resultsPaneOpen
+    ? ({
+      '--results-pane-height': `${resultsPaneHeight}px`,
+    } as CSSProperties)
+    : undefined;
 
   const visibleResult = activeTab?.result ?? { schema: null, rows: null };
   const visibleError = activeTab?.error || activeTab?.job?.error?.message || globalError;
@@ -278,6 +346,17 @@ export default function App() {
   useEffect(() => {
     objectTabsRef.current = objectTabs;
   }, [objectTabs]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        PANE_SIZE_STORAGE_KEY,
+        JSON.stringify({ explorerPaneWidth, resultsPaneHeight }),
+      );
+    } catch {
+      // Pane size persistence is cosmetic; ignore unavailable storage.
+    }
+  }, [explorerPaneWidth, resultsPaneHeight]);
 
   useEffect(() => {
     selectedProfileIDRef.current = activeProfileID;
@@ -1197,6 +1276,108 @@ export default function App() {
     }
   }
 
+  function handleExplorerResizePointerDown(event: ReactPointerEvent<HTMLDivElement>) {
+    if (event.button !== 0) {
+      return;
+    }
+
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = explorerPaneWidth;
+    setActiveResizeHandle('explorer');
+
+    const handlePointerMove = (moveEvent: PointerEvent) => {
+      const maxWidth = Math.max(MIN_EXPLORER_PANE_WIDTH, window.innerWidth - MIN_WORKSPACE_WIDTH);
+      setExplorerPaneWidth(clamp(startWidth + moveEvent.clientX - startX, MIN_EXPLORER_PANE_WIDTH, maxWidth));
+    };
+
+    const stopResize = () => {
+      setActiveResizeHandle(null);
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', stopResize);
+      window.removeEventListener('pointercancel', stopResize);
+    };
+
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', stopResize);
+    window.addEventListener('pointercancel', stopResize);
+  }
+
+  function handleResultsResizePointerDown(event: ReactPointerEvent<HTMLDivElement>) {
+    if (event.button !== 0) {
+      return;
+    }
+
+    event.preventDefault();
+    const startY = event.clientY;
+    const startHeight = resultsPaneHeight;
+    setActiveResizeHandle('results');
+
+    const handlePointerMove = (moveEvent: PointerEvent) => {
+      const maxHeight = Math.max(MIN_RESULTS_PANE_HEIGHT, window.innerHeight - MIN_EDITOR_HEIGHT - 66);
+      setResultsPaneHeight(clamp(startHeight + startY - moveEvent.clientY, MIN_RESULTS_PANE_HEIGHT, maxHeight));
+    };
+
+    const stopResize = () => {
+      setActiveResizeHandle(null);
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', stopResize);
+      window.removeEventListener('pointercancel', stopResize);
+    };
+
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', stopResize);
+    window.addEventListener('pointercancel', stopResize);
+  }
+
+  function handleExplorerResizeKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
+    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight' && event.key !== 'Home' && event.key !== 'End') {
+      return;
+    }
+
+    event.preventDefault();
+    const maxWidth = Math.max(MIN_EXPLORER_PANE_WIDTH, window.innerWidth - MIN_WORKSPACE_WIDTH);
+    if (event.key === 'Home') {
+      setExplorerPaneWidth(MIN_EXPLORER_PANE_WIDTH);
+      return;
+    }
+    if (event.key === 'End') {
+      setExplorerPaneWidth(maxWidth);
+      return;
+    }
+    setExplorerPaneWidth((current) =>
+      clamp(
+        current + (event.key === 'ArrowRight' ? RESIZE_KEYBOARD_STEP : -RESIZE_KEYBOARD_STEP),
+        MIN_EXPLORER_PANE_WIDTH,
+        maxWidth,
+      ),
+    );
+  }
+
+  function handleResultsResizeKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
+    if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown' && event.key !== 'Home' && event.key !== 'End') {
+      return;
+    }
+
+    event.preventDefault();
+    const maxHeight = Math.max(MIN_RESULTS_PANE_HEIGHT, window.innerHeight - MIN_EDITOR_HEIGHT - 66);
+    if (event.key === 'Home') {
+      setResultsPaneHeight(MIN_RESULTS_PANE_HEIGHT);
+      return;
+    }
+    if (event.key === 'End') {
+      setResultsPaneHeight(maxHeight);
+      return;
+    }
+    setResultsPaneHeight((current) =>
+      clamp(
+        current + (event.key === 'ArrowUp' ? RESIZE_KEYBOARD_STEP : -RESIZE_KEYBOARD_STEP),
+        MIN_RESULTS_PANE_HEIGHT,
+        maxHeight,
+      ),
+    );
+  }
+
   async function saveEditorTab(tab: EditorTab, chooseLocation: boolean) {
     if (!chooseLocation && tab.sql === tab.savedSQL) {
       return;
@@ -2030,7 +2211,10 @@ export default function App() {
         </div>
       </header>
 
-      <div className={explorerPaneOpen ? 'app-body' : 'app-body explorer-collapsed'}>
+      <div
+        className={appBodyClassName}
+        style={appBodyStyle}
+      >
         {explorerPaneOpen && (
           <aside className="explorer-pane">
             <header className="pane-header">
@@ -2122,8 +2306,23 @@ export default function App() {
             </div>
           </aside>
         )}
+        {explorerPaneOpen && (
+          <div
+            className="resize-handle resize-handle-vertical"
+            role="separator"
+            aria-label="Resize explorer pane"
+            aria-orientation="vertical"
+            aria-valuemin={MIN_EXPLORER_PANE_WIDTH}
+            aria-valuemax={Math.max(MIN_EXPLORER_PANE_WIDTH, window.innerWidth - MIN_WORKSPACE_WIDTH)}
+            aria-valuenow={explorerPaneWidth}
+            tabIndex={0}
+            onPointerDown={handleExplorerResizePointerDown}
+            onKeyDown={handleExplorerResizeKeyDown}
+            onDoubleClick={() => setExplorerPaneWidth(DEFAULT_EXPLORER_PANE_WIDTH)}
+          />
+        )}
 
-        <section className={resultsPaneOpen ? 'workspace' : 'workspace results-collapsed'}>
+        <section className={resultsPaneOpen ? 'workspace' : 'workspace results-collapsed'} style={workspaceStyle}>
           <header className="top-bar">
             <div className="toolbar">
               <button
@@ -2211,6 +2410,22 @@ export default function App() {
               />
             )}
           </section>
+
+          {resultsPaneOpen && (
+            <div
+              className="resize-handle resize-handle-horizontal"
+              role="separator"
+              aria-label="Resize results pane"
+              aria-orientation="horizontal"
+              aria-valuemin={MIN_RESULTS_PANE_HEIGHT}
+              aria-valuemax={Math.max(MIN_RESULTS_PANE_HEIGHT, window.innerHeight - MIN_EDITOR_HEIGHT - 66)}
+              aria-valuenow={resultsPaneHeight}
+              tabIndex={0}
+              onPointerDown={handleResultsResizePointerDown}
+              onKeyDown={handleResultsResizeKeyDown}
+              onDoubleClick={() => setResultsPaneHeight(DEFAULT_RESULTS_PANE_HEIGHT)}
+            />
+          )}
 
           {resultsPaneOpen && (
             <section className="results-region">

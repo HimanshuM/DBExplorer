@@ -169,7 +169,7 @@ button svg {
 
 .app-body {
   display: grid;
-  grid-template-columns: 280px minmax(0, 1fr);
+  grid-template-columns: var(--explorer-pane-width, 280px) 6px minmax(0, 1fr);
   min-width: 0;
   min-height: 0;
 }
@@ -224,7 +224,7 @@ button svg {
 
 .workspace {
   display: grid;
-  grid-template-rows: 42px minmax(220px, 1fr) 280px;
+  grid-template-rows: 42px minmax(220px, 1fr) 6px var(--results-pane-height, 280px);
   min-width: 0;
   min-height: 0;
 }
@@ -556,8 +556,64 @@ button svg {
   min-height: 0;
 }
 
-.editor-region {
-  border-bottom: 1px solid #272d37;
+.resize-handle {
+  position: relative;
+  z-index: 2;
+  flex: 0 0 auto;
+  background: #101318;
+  outline: none;
+  touch-action: none;
+}
+
+.resize-handle::before {
+  position: absolute;
+  content: "";
+  background: #272d37;
+  transition: background 120ms ease, box-shadow 120ms ease;
+}
+
+.resize-handle:hover::before,
+.resize-handle:focus-visible::before,
+.app-body.resizing-explorer .resize-handle-vertical::before,
+.app-body.resizing-results .resize-handle-horizontal::before {
+  background: #5e7ce2;
+  box-shadow: 0 0 0 1px rgb(94 124 226 / 0.24);
+}
+
+.resize-handle-vertical {
+  width: 6px;
+  cursor: col-resize;
+}
+
+.resize-handle-vertical::before {
+  top: 0;
+  bottom: 0;
+  left: 2px;
+  width: 1px;
+}
+
+.resize-handle-horizontal {
+  height: 6px;
+  cursor: row-resize;
+}
+
+.resize-handle-horizontal::before {
+  top: 2px;
+  right: 0;
+  left: 0;
+  height: 1px;
+}
+
+.app-body.resizing-explorer,
+.app-body.resizing-explorer * {
+  cursor: col-resize;
+  user-select: none;
+}
+
+.app-body.resizing-results,
+.app-body.resizing-results * {
+  cursor: row-resize;
+  user-select: none;
 }
 
 .monaco-editor .sql-token-schema {
@@ -1517,6 +1573,10 @@ th:first-child {
   }
 
   .explorer-pane {
+    display: none;
+  }
+
+  .resize-handle-vertical {
     display: none;
   }
 
