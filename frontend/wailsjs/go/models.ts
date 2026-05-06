@@ -1,15 +1,15 @@
 export namespace domain {
-
+	
 	export class ColumnType {
 	    dbTypeName: string;
 	    category: string;
 	    isArray: boolean;
 	    nullable: boolean;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new ColumnType(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.dbTypeName = source["dbTypeName"];
@@ -22,18 +22,18 @@ export namespace domain {
 	    name: string;
 	    type: ColumnType;
 	    nullable: boolean;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new ColumnDef(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.name = source["name"];
 	        this.type = this.convertValues(source["type"], ColumnType);
 	        this.nullable = source["nullable"];
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -52,7 +52,7 @@ export namespace domain {
 		    return a;
 		}
 	}
-
+	
 	export class ConnProfile {
 	    id: string;
 	    name: string;
@@ -63,11 +63,11 @@ export namespace domain {
 	    database: string;
 	    sslMode: string;
 	    options: Record<string, string>;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new ConnProfile(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -84,11 +84,11 @@ export namespace domain {
 	export class ConnectionTestResult {
 	    ok: boolean;
 	    message: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new ConnectionTestResult(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.ok = source["ok"];
@@ -97,11 +97,11 @@ export namespace domain {
 	}
 	export class ExplorerDatabase {
 	    name: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new ExplorerDatabase(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.name = source["name"];
@@ -111,11 +111,11 @@ export namespace domain {
 	    name: string;
 	    schema: string;
 	    kind: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new ExplorerObject(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.name = source["name"];
@@ -125,11 +125,11 @@ export namespace domain {
 	}
 	export class ExplorerSchema {
 	    name: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new ExplorerSchema(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.name = source["name"];
@@ -142,11 +142,11 @@ export namespace domain {
 	    language: string;
 	    volatility: string;
 	    returnsSet: boolean;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new FunctionInfo(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.name = source["name"];
@@ -160,11 +160,11 @@ export namespace domain {
 	export class GetResultSchemaRequest {
 	    jobId: string;
 	    resultSetId: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new GetResultSchemaRequest(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.jobId = source["jobId"];
@@ -176,11 +176,11 @@ export namespace domain {
 	    resultSetId: string;
 	    start: number;
 	    count: number;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new GetRowsRequest(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.jobId = source["jobId"];
@@ -195,11 +195,11 @@ export namespace domain {
 	    rowKeys: string[];
 	    rowCountKnown: boolean;
 	    rowCount: number;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new GetRowsResponse(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.start = source["start"];
@@ -212,11 +212,11 @@ export namespace domain {
 	export class JobError {
 	    code: string;
 	    message: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new JobError(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.code = source["code"];
@@ -230,11 +230,11 @@ export namespace domain {
 	    rowsAffected: number;
 	    rowCountKnown: boolean;
 	    rowCount: number;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new ResultSetSummary(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.resultSetId = source["resultSetId"];
@@ -254,11 +254,11 @@ export namespace domain {
 	    endedAt: number;
 	    error?: JobError;
 	    resultSets: ResultSetSummary[];
-
+	
 	    static createFrom(source: any = {}) {
 	        return new JobSummary(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.jobId = source["jobId"];
@@ -270,7 +270,7 @@ export namespace domain {
 	        this.error = this.convertValues(source["error"], JobError);
 	        this.resultSets = this.convertValues(source["resultSets"], ResultSetSummary);
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -292,11 +292,11 @@ export namespace domain {
 	export class ObjectDetail {
 	    name: string;
 	    value: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new ObjectDetail(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.name = source["name"];
@@ -312,11 +312,11 @@ export namespace domain {
 	    nullable: boolean;
 	    default: string;
 	    comment: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new TypeUsageInfo(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.schema = source["schema"];
@@ -343,11 +343,11 @@ export namespace domain {
 	    canonical: string;
 	    subtypeDiff: string;
 	    usages: TypeUsageInfo[];
-
+	
 	    static createFrom(source: any = {}) {
 	        return new TypeInfo(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.category = source["category"];
@@ -364,7 +364,7 @@ export namespace domain {
 	        this.subtypeDiff = source["subtypeDiff"];
 	        this.usages = this.convertValues(source["usages"], TypeUsageInfo);
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -392,11 +392,11 @@ export namespace domain {
 	    cycle: boolean;
 	    cacheSize: string;
 	    lastValue: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new SequenceInfo(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.dataType = source["dataType"];
@@ -414,11 +414,11 @@ export namespace domain {
 	    strategy: string;
 	    reason: string;
 	    keyColumns: string[];
-
+	
 	    static createFrom(source: any = {}) {
 	        return new TableEditabilityInfo(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.editable = source["editable"];
@@ -439,11 +439,11 @@ export namespace domain {
 	    deferrable: boolean;
 	    initiallyDeferred: boolean;
 	    definition: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new TableReferenceInfo(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.name = source["name"];
@@ -471,11 +471,11 @@ export namespace domain {
 	    deferrable: boolean;
 	    initiallyDeferred: boolean;
 	    definition: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new TableForeignKeyInfo(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.name = source["name"];
@@ -500,11 +500,11 @@ export namespace domain {
 	    hasExpression: boolean;
 	    valid: boolean;
 	    definition: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new TableIndexInfo(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.name = source["name"];
@@ -529,11 +529,11 @@ export namespace domain {
 	    identity: string;
 	    generated: string;
 	    primaryKey: boolean;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new TableColumnInfo(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.name = source["name"];
@@ -564,11 +564,11 @@ export namespace domain {
 	    sequence: SequenceInfo;
 	    functions: FunctionInfo[];
 	    type: TypeInfo;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new ObjectInfo(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.database = source["database"];
@@ -586,7 +586,7 @@ export namespace domain {
 	        this.functions = this.convertValues(source["functions"], FunctionInfo);
 	        this.type = this.convertValues(source["type"], TypeInfo);
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -607,16 +607,16 @@ export namespace domain {
 	}
 	export class ResultSchema {
 	    columns: ColumnDef[];
-
+	
 	    static createFrom(source: any = {}) {
 	        return new ResultSchema(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.columns = this.convertValues(source["columns"], ColumnDef);
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -635,16 +635,16 @@ export namespace domain {
 		    return a;
 		}
 	}
-
+	
 	export class StatementRange {
 	    startOffset: number;
 	    endOffset: number;
 	    text: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new StatementRange(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.startOffset = source["startOffset"];
@@ -660,11 +660,11 @@ export namespace domain {
 	    mode: string;
 	    limit?: number;
 	    readOnly: boolean;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new RunQueryRequest(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.profileId = source["profileId"];
@@ -675,7 +675,7 @@ export namespace domain {
 	        this.limit = source["limit"];
 	        this.readOnly = source["readOnly"];
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -698,11 +698,11 @@ export namespace domain {
 	    jobId: string;
 	    sessionId: string;
 	    backendPid: number;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new RunQueryResponse(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.jobId = source["jobId"];
@@ -718,11 +718,11 @@ export namespace domain {
 	    database: string;
 	    chooseLocation: boolean;
 	    defaultFilename: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new SaveScriptRequest(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.path = source["path"];
@@ -737,11 +737,11 @@ export namespace domain {
 	export class SaveScriptResponse {
 	    path: string;
 	    title: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new SaveScriptResponse(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.path = source["path"];
@@ -756,11 +756,11 @@ export namespace domain {
 	    savedSql: string;
 	    profileId: string;
 	    database: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new ScriptTabState(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
@@ -775,17 +775,17 @@ export namespace domain {
 	export class ScriptWorkspace {
 	    tabs: ScriptTabState[];
 	    activeTabId: string;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new ScriptWorkspace(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.tabs = this.convertValues(source["tabs"], ScriptTabState);
 	        this.activeTabId = source["activeTabId"];
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -804,12 +804,12 @@ export namespace domain {
 		    return a;
 		}
 	}
-
-
-
-
-
-
+	
+	
+	
+	
+	
+	
 	export class TableInfo {
 	    database: string;
 	    schema: string;
@@ -821,11 +821,11 @@ export namespace domain {
 	    foreignKeys: TableForeignKeyInfo[];
 	    referencedBy: TableReferenceInfo[];
 	    editability: TableEditabilityInfo;
-
+	
 	    static createFrom(source: any = {}) {
 	        return new TableInfo(source);
 	    }
-
+	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.database = source["database"];
@@ -839,7 +839,7 @@ export namespace domain {
 	        this.referencedBy = this.convertValues(source["referencedBy"], TableReferenceInfo);
 	        this.editability = this.convertValues(source["editability"], TableEditabilityInfo);
 	    }
-
+	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
 		    if (!a) {
 		        return a;
@@ -858,7 +858,8 @@ export namespace domain {
 		    return a;
 		}
 	}
-
-
+	
+	
 
 }
+
