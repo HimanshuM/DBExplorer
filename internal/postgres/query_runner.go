@@ -186,7 +186,7 @@ func (qr *QueryRunner) runJob(ctx context.Context, job *Job, session *sessionHan
 	startedSnapshot := qr.markJobRunning(job)
 	qr.emitter.EmitStarted(ctx, startedSnapshot)
 
-	schema, rows, resultSummary, runErr := qr.executeSingleResultQuery(ctx, session, job.request.SQL)
+	schema, rows, resultSummary, runErr := qr.executeSingleResultQuery(ctx, session, job.request.SQL, job.request.Limit)
 	if runErr == nil {
 		job.mu.Lock()
 		if !isTerminal(job.status) {
@@ -219,8 +219,18 @@ func (qr *QueryRunner) runJob(ctx context.Context, job *Job, session *sessionHan
 	}
 }
 
-func (qr *QueryRunner) executeSingleResultQuery(ctx context.Context, session *sessionHandle, sql string) (domain.ResultSchema, [][]any, domain.ResultSetSummary, error) {
-	rows, err := session.conn.Query(ctx, sql)
+func (qr *QueryRunner) executeSingleResultQuery(ctx context.Context, session *sessionHandle, sql string, limit *int) (domain.ResultSchema, [][]any, domain.ResultSetSummary, error) {
+	querySQL := sql
+	rowLimit, hasRowLimit := normalizedRowLimit(limit)
+	sqlLimited := false
+	if hasRowLimit {
+		if limitedSQL, ok := previewLimitedSQL(sql, rowLimit); ok {
+			querySQL = limitedSQL
+			sqlLimited = true
+		}
+	}
+
+	rows, err := session.conn.Query(ctx, querySQL)
 	if err != nil {
 		return domain.ResultSchema{}, nil, domain.ResultSetSummary{}, err
 	}
@@ -230,6 +240,7 @@ func (qr *QueryRunner) executeSingleResultQuery(ctx context.Context, session *se
 	schema := buildSchema(fieldDescriptions, session.conn)
 	typeNames := typeNamesForFields(fieldDescriptions, session.conn)
 	storedRows := make([][]any, 0)
+	rowCountKnown := true
 
 	for rows.Next() {
 		vals, err := rows.Values()
@@ -237,10 +248,18 @@ func (qr *QueryRunner) executeSingleResultQuery(ctx context.Context, session *se
 			return domain.ResultSchema{}, nil, domain.ResultSetSummary{}, fmt.Errorf("row decode: %w", err)
 		}
 		storedRows = append(storedRows, cloneRow(normalizeRow(vals, typeNames)))
+		if hasRowLimit && !sqlLimited && len(storedRows) >= rowLimit {
+			rowCountKnown = false
+			rows.Close()
+			break
+		}
 	}
 
 	if err := rows.Err(); err != nil {
 		return domain.ResultSchema{}, nil, domain.ResultSetSummary{}, err
+	}
+	if hasRowLimit && sqlLimited && len(storedRows) >= rowLimit {
+		rowCountKnown = false
 	}
 
 	commandTag := rows.CommandTag()
@@ -249,14 +268,49 @@ func (qr *QueryRunner) executeSingleResultQuery(ctx context.Context, session *se
 		StatementIndex: 0,
 		CommandTag:     commandTag.String(),
 		RowsAffected:   commandTag.RowsAffected(),
-		RowCountKnown:  true,
+		RowCountKnown:  rowCountKnown,
 		RowCount:       int64(len(storedRows)),
 	}
 	if len(fieldDescriptions) == 0 {
 		schema = domain.ResultSchema{Columns: []domain.ColumnDef{}}
+		summary.RowCountKnown = true
 		summary.RowCount = 0
 	}
 	return schema, storedRows, summary, nil
+}
+
+func normalizedRowLimit(limit *int) (int, bool) {
+	if limit == nil {
+		return 0, false
+	}
+	if *limit < 0 {
+		return 0, true
+	}
+	return *limit, true
+}
+
+func previewLimitedSQL(sql string, limit int) (string, bool) {
+	query := strings.TrimSpace(sql)
+	for strings.HasSuffix(query, ";") {
+		query = strings.TrimSpace(strings.TrimSuffix(query, ";"))
+	}
+	if query == "" || strings.Contains(query, ";") {
+		return "", false
+	}
+
+	firstToken := strings.ToLower(query)
+	if index := strings.IndexFunc(firstToken, func(r rune) bool {
+		return r == ' ' || r == '\t' || r == '\n' || r == '\r' || r == '('
+	}); index >= 0 {
+		firstToken = firstToken[:index]
+	}
+
+	switch firstToken {
+	case "select", "with", "values", "table":
+		return fmt.Sprintf("select * from (\n%s\n) as dbx_preview_result limit %d", query, limit), true
+	default:
+		return "", false
+	}
 }
 
 func (qr *QueryRunner) markJobRunning(job *Job) domain.JobSummary {
@@ -401,6 +455,10 @@ func (qr *QueryRunner) GetRows(ctx context.Context, req domain.GetRowsRequest) (
 	job.mu.RLock()
 	status := job.status
 	total := len(job.rows)
+	rowCountKnown := true
+	if len(job.resultSets) > 0 {
+		rowCountKnown = job.resultSets[0].RowCountKnown
+	}
 	start := req.Start
 	if start < 0 {
 		start = 0
@@ -429,7 +487,7 @@ func (qr *QueryRunner) GetRows(ctx context.Context, req domain.GetRowsRequest) (
 		return domain.GetRowsResponse{Start: start, Rows: paged, RowCountKnown: false}, nil
 	}
 
-	return domain.GetRowsResponse{Start: start, Rows: paged, RowCountKnown: true, RowCount: int64(total)}, nil
+	return domain.GetRowsResponse{Start: start, Rows: paged, RowCountKnown: rowCountKnown, RowCount: int64(total)}, nil
 }
 
 func (qr *QueryRunner) DisposeJob(ctx context.Context, jobID domain.JobID) error {

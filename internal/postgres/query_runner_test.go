@@ -109,6 +109,35 @@ func TestFinishWithErrorSetsTerminalState(t *testing.T) {
 	}
 }
 
+func TestPreviewLimitedSQLWrapsResultQueries(t *testing.T) {
+	limited, ok := previewLimitedSQL("select id, name from people order by id;", 100)
+	if !ok {
+		t.Fatal("expected select query to be limitable")
+	}
+	want := "select * from (\nselect id, name from people order by id\n) as dbx_preview_result limit 100"
+	if limited != want {
+		t.Fatalf("unexpected limited SQL:\n%s", limited)
+	}
+
+	limited, ok = previewLimitedSQL("with recent as (select * from people) select * from recent", 25)
+	if !ok || !strings.HasSuffix(limited, "limit 25") {
+		t.Fatalf("expected CTE query to be wrapped, got ok=%v sql=%q", ok, limited)
+	}
+}
+
+func TestPreviewLimitedSQLRejectsNonResultOrMultiStatementQueries(t *testing.T) {
+	tests := []string{
+		"update people set name = 'Ada'",
+		"select 1; select 2",
+		";",
+	}
+	for _, sql := range tests {
+		if limited, ok := previewLimitedSQL(sql, 100); ok {
+			t.Fatalf("expected %q not to be wrapped, got %q", sql, limited)
+		}
+	}
+}
+
 func TestDisposeJobRejectsNonTerminalJob(t *testing.T) {
 	qr := &QueryRunner{registry: NewJobRegistry()}
 	job := &Job{
@@ -259,6 +288,45 @@ func TestGetRowsAppliesPagingAndCopiesRowsForTerminalJobs(t *testing.T) {
 	}
 	if originalByte != 1 {
 		t.Fatalf("expected stored byte slice to remain unchanged, got %v", originalByte)
+	}
+}
+
+func TestGetRowsReportsUnknownCountForLimitedTerminalJobs(t *testing.T) {
+	qr := &QueryRunner{registry: NewJobRegistry()}
+	job := &Job{
+		id:     "job_limited",
+		status: domain.JobSucceeded,
+		rows: [][]any{
+			{1},
+			{2},
+		},
+		resultSets: []domain.ResultSetSummary{{
+			ResultSetID:   resultSetIDDefault,
+			RowCountKnown: false,
+			RowCount:      2,
+		}},
+		done: make(chan struct{}),
+	}
+	qr.registry.Put(job)
+
+	resp, err := qr.GetRows(context.Background(), domain.GetRowsRequest{
+		JobID:       job.id,
+		ResultSetID: resultSetIDDefault,
+		Start:       0,
+		Count:       10,
+	})
+	if err != nil {
+		t.Fatalf("GetRows returned error: %v", err)
+	}
+
+	if resp.RowCountKnown {
+		t.Fatal("RowCountKnown should be false for result sets truncated by a preview limit")
+	}
+	if resp.RowCount != 2 {
+		t.Fatalf("expected stored preview row count 2, got %d", resp.RowCount)
+	}
+	if len(resp.Rows) != 2 {
+		t.Fatalf("expected 2 preview rows, got %+v", resp.Rows)
 	}
 }
 
