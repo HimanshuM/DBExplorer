@@ -27,6 +27,11 @@ export type SQLReferencedRelation = {
   alias: string;
 };
 
+export type SQLCompletionContext = {
+  kind: 'keyword' | 'object' | 'function' | 'column';
+  qualifier: string;
+};
+
 export const SQL_KEYWORDS = new Set([
   'add',
   'all',
@@ -372,7 +377,16 @@ function tokenizeSQLForSemanticColors(value: string) {
   return tokens;
 }
 
-function inferSQLCompletionContext(tokens: SQLParsedToken[]): 'keyword' | 'object' | 'function' | 'column' {
+function lastIdentifierBeforeTrailingDot(tokens: SQLParsedToken[]) {
+  const rawLastToken = tokens[tokens.length - 1];
+  const previousToken = tokens[tokens.length - 2];
+  if (rawLastToken?.kind !== 'dot' || previousToken?.kind !== 'identifier') {
+    return '';
+  }
+  return previousToken.value;
+}
+
+function inferSQLCompletionContext(tokens: SQLParsedToken[]): SQLCompletionContext {
   const significantTokens = tokens.filter((token) => token.kind !== 'dot');
   const lastToken = significantTokens[significantTokens.length - 1];
   const lastValue = lastToken?.value.toLowerCase() ?? '';
@@ -380,12 +394,8 @@ function inferSQLCompletionContext(tokens: SQLParsedToken[]): 'keyword' | 'objec
   const previousValue = previousToken?.value.toLowerCase() ?? '';
   const rawLastToken = tokens[tokens.length - 1];
 
-  if (rawLastToken?.kind === 'dot') {
-    return 'object';
-  }
-
   if (lastToken?.kind === 'keyword' && SQL_OBJECT_CONTEXT_KEYWORDS.has(lastValue)) {
-    return 'object';
+    return { kind: 'object', qualifier: '' };
   }
 
   if (
@@ -394,7 +404,7 @@ function inferSQLCompletionContext(tokens: SQLParsedToken[]): 'keyword' | 'objec
     ['full', 'inner', 'left', 'right', 'cross'].includes(previousValue) &&
     lastValue === 'join'
   ) {
-    return 'object';
+    return { kind: 'object', qualifier: '' };
   }
 
   let clause: string | null = null;
@@ -405,19 +415,27 @@ function inferSQLCompletionContext(tokens: SQLParsedToken[]): 'keyword' | 'objec
     }
   }
 
+  const dotQualifier = lastIdentifierBeforeTrailingDot(tokens);
+  if (dotQualifier) {
+    return {
+      kind: clause === 'from' || clause === 'join' ? 'object' : 'column',
+      qualifier: dotQualifier,
+    };
+  }
+
   if (clause === 'from' || clause === 'join') {
-    return lastToken?.kind === 'comma' ? 'object' : 'keyword';
+    return { kind: lastToken?.kind === 'comma' ? 'object' : 'keyword', qualifier: '' };
   }
 
   if (clause === 'where' || clause === 'on' || clause === 'having' || clause === 'returning') {
-    return 'column';
+    return { kind: 'column', qualifier: '' };
   }
 
   if (clause === 'select') {
-    return 'function';
+    return { kind: 'function', qualifier: '' };
   }
 
-  return 'keyword';
+  return { kind: 'keyword', qualifier: '' };
 }
 
 export function getSQLCompletionContext(
@@ -543,18 +561,10 @@ function collectReferencedSQLRelations(
 
 export function getSQLReferencedRelations(
   model: editor.ITextModel,
-  position: { lineNumber: number; column: number },
+  _position: { lineNumber: number; column: number },
   completionData: SQLCompletionData,
 ) {
-  const word = model.getWordUntilPosition(position);
-  const textBeforeWord = model.getValueInRange({
-    startLineNumber: 1,
-    startColumn: 1,
-    endLineNumber: position.lineNumber,
-    endColumn: word.startColumn,
-  });
-
-  return collectReferencedSQLRelations(tokenizeSQLForSemanticColors(textBeforeWord), completionData);
+  return collectReferencedSQLRelations(tokenizeSQLForSemanticColors(model.getValue()), completionData);
 }
 
 function tokenKey(token: SQLIdentifierToken) {

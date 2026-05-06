@@ -947,7 +947,7 @@ export default function App() {
           insertText: quoteIdentifier(schema),
           range,
         }));
-        const objectSuggestions = completionData.objects.map<languages.CompletionItem>((object) => ({
+        const buildObjectSuggestions = (objects: SQLCompletionObject[]) => objects.map<languages.CompletionItem>((object) => ({
           label: object.name,
           kind:
             object.kind === 'function'
@@ -959,9 +959,17 @@ export default function App() {
           insertText: quoteIdentifier(object.name),
           range,
         }));
+        const objectSuggestions = buildObjectSuggestions(completionData.objects);
         const relations = getSQLReferencedRelations(model, position, completionData);
-        const columnSuggestions = context === 'column'
-          ? (await loadSQLColumnCompletions(completionData, relations)).map<languages.CompletionItem>((column) => ({
+        const qualifier = context.qualifier.toLowerCase();
+        const qualifiedRelations = qualifier
+          ? relations.filter((relation) =>
+            relation.alias.toLowerCase() === qualifier ||
+            relation.name.toLowerCase() === qualifier,
+          )
+          : relations;
+        const columnSuggestions = context.kind === 'column'
+          ? (await loadSQLColumnCompletions(completionData, qualifiedRelations)).map<languages.CompletionItem>((column) => ({
             label: column.name,
             kind: monaco.languages.CompletionItemKind.Field,
             detail: `${column.table} - ${column.dataType}`,
@@ -970,15 +978,26 @@ export default function App() {
           }))
           : [];
 
-        if (context === 'object') {
+        if (context.kind === 'object') {
+          if (qualifier) {
+            const childObjects = completionData.objects.filter((object) => object.schema.toLowerCase() === qualifier);
+            return { suggestions: buildObjectSuggestions(childObjects) };
+          }
           return { suggestions: [...schemaSuggestions, ...objectSuggestions] };
         }
 
-        if (context === 'column') {
+        if (context.kind === 'column') {
+          if (qualifier) {
+            if (qualifiedRelations.length > 0) {
+              return { suggestions: columnSuggestions };
+            }
+            const childObjects = completionData.objects.filter((object) => object.schema.toLowerCase() === qualifier);
+            return { suggestions: buildObjectSuggestions(childObjects) };
+          }
           return { suggestions: [...columnSuggestions, ...functionSuggestions, ...keywordSuggestions] };
         }
 
-        if (context === 'function') {
+        if (context.kind === 'function') {
           return { suggestions: [...functionSuggestions, ...keywordSuggestions] };
         }
 
