@@ -1,10 +1,10 @@
 import { type EditorTab } from './types';
 
-export const initialSQL = `select *
-from pg_catalog.pg_tables
-where schemaname not in ('pg_catalog', 'information_schema')
-order by schemaname, tablename
-limit 100;`;
+export const initialSQL = `SELECT *
+FROM pg_catalog.pg_tables
+WHERE schemaname NOT IN ('pg_catalog', 'information_schema')
+ORDER BY schemaname, tablename
+LIMIT 100;`;
 
 export const terminalStatuses = new Set(['succeeded', 'failed', 'canceled']);
 
