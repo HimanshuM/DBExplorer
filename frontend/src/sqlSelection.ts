@@ -35,6 +35,23 @@ export function getSQLExecutionTarget(
   return findStatementAtOffset(model.getValue(), model.getOffsetAt(position));
 }
 
+export function getSQLStatementAtCursor(
+  mountedEditor: editor.ICodeEditor,
+): SQLExecutionTarget {
+  const model = mountedEditor.getModel();
+  if (!model) {
+    return {
+      sql: '',
+      mode: 'statement',
+      startOffset: 0,
+      endOffset: 0,
+    };
+  }
+
+  const position = mountedEditor.getPosition() ?? model.getPositionAt(0);
+  return findStatementAtOffset(model.getValue(), model.getOffsetAt(position));
+}
+
 function findStatementAtOffset(source: string, cursorOffset: number): SQLExecutionTarget {
   const statements = splitSQLStatements(source);
   const containingStatement = statements.find(

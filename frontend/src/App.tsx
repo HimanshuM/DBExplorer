@@ -22,7 +22,7 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
-import type { editor, languages } from 'monaco-editor';
+import type { editor, IRange, languages } from 'monaco-editor';
 import { KeyCode, KeyMod } from 'monaco-editor';
 import {
   CancelJob,
@@ -73,7 +73,7 @@ import { formatError, jobStatusError, quoteIdentifier } from './format';
 import { ObjectInfoWorkspace, objectKindLabel, type ObjectLinkTarget } from './objectInfo';
 import { createEditorTab, terminalStatuses } from './queryTabs';
 import { ResultTable, resultLabel } from './resultTable';
-import { getSQLExecutionTarget } from './sqlSelection';
+import { getSQLExecutionTarget, getSQLStatementAtCursor } from './sqlSelection';
 import { StatusBar, collectJobStatusItems } from './statusBar';
 import { ConnectionDropdown, DatabaseDropdown } from './connectionDropdown';
 import { LayoutPaneIcon, iconForObjectTabKind } from './objectIcons';
@@ -115,6 +115,7 @@ import {
   type SQLReferencedRelation,
   uppercaseSQLKeywordBeforePosition,
 } from './app/sqlLanguage';
+import { formatSQL } from './app/sqlFormatter';
 
 const RESULT_PREVIEW_ROW_LIMIT = 100;
 const DEFAULT_EXPLORER_PANE_WIDTH = 280;
@@ -1287,6 +1288,80 @@ export default function App() {
     refreshIdentifierDecorations();
     mountedEditor.addCommand(KeyMod.CtrlCmd | KeyCode.Enter, () => {
       handleRunRef.current();
+    });
+    const formatEditorRange = (
+      codeEditor: editor.ICodeEditor,
+      range: IRange,
+      source: string,
+      editSource: string,
+    ) => {
+      const formatted = formatSQL(source);
+      codeEditor.pushUndoStop();
+      codeEditor.executeEdits(editSource, [{ range, text: formatted }]);
+      codeEditor.pushUndoStop();
+    };
+
+    mountedEditor.addAction({
+      id: 'db-explorer.format-selection-sql',
+      label: 'Format SQL',
+      precondition: 'editorHasSelection',
+      keybindings: [KeyMod.Shift | KeyMod.Alt | KeyCode.KeyF],
+      contextMenuGroupId: '1_modification',
+      contextMenuOrder: 1,
+      run: (codeEditor) => {
+        const model = codeEditor.getModel();
+        const selection = codeEditor.getSelection();
+        if (!model || !selection || selection.isEmpty()) {
+          return;
+        }
+
+        formatEditorRange(codeEditor, selection, model.getValueInRange(selection), 'format-sql-selection');
+      },
+    });
+    mountedEditor.addAction({
+      id: 'db-explorer.format-script',
+      label: 'Format Script',
+      precondition: '!editorHasSelection',
+      keybindings: [KeyMod.Shift | KeyMod.Alt | KeyCode.KeyF],
+      contextMenuGroupId: '1_modification',
+      contextMenuOrder: 1,
+      run: (codeEditor) => {
+        const model = codeEditor.getModel();
+        if (!model) {
+          return;
+        }
+
+        formatEditorRange(codeEditor, model.getFullModelRange(), model.getValue(), 'format-sql-script');
+      },
+    });
+    mountedEditor.addAction({
+      id: 'db-explorer.format-current-sql',
+      label: 'Format this SQL',
+      contextMenuGroupId: '1_modification',
+      contextMenuOrder: 2,
+      run: (codeEditor) => {
+        const model = codeEditor.getModel();
+        if (!model) {
+          return;
+        }
+
+        const target = getSQLStatementAtCursor(codeEditor);
+        if (!target.sql.trim()) {
+          return;
+        }
+
+        formatEditorRange(
+          codeEditor,
+          {
+            startLineNumber: model.getPositionAt(target.startOffset).lineNumber,
+            startColumn: model.getPositionAt(target.startOffset).column,
+            endLineNumber: model.getPositionAt(target.endOffset).lineNumber,
+            endColumn: model.getPositionAt(target.endOffset).column,
+          },
+          target.sql,
+          'format-current-sql',
+        );
+      },
     });
     mountedEditor.onDidChangeModelContent((event) => {
       const model = mountedEditor.getModel();
@@ -2555,7 +2630,7 @@ export default function App() {
                   fontFamily: 'JetBrains Mono, Menlo, Consolas, monospace',
                   scrollBeyondLastLine: false,
                   automaticLayout: true,
-                  tabSize: 2,
+                  tabSize: 4,
                 }}
               />
             )}
