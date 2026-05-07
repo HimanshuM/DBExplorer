@@ -1,4 +1,4 @@
-import { type editor } from 'monaco-editor';
+import { type editor, type languages } from 'monaco-editor';
 import { type ExplorerTreeNodeKind } from '../types';
 
 export type SQLCompletionObject = {
@@ -180,6 +180,37 @@ type SQLParsedToken = SQLIdentifierToken & {
 type SQLClassifiedToken = SQLIdentifierToken & {
   tokenType: SQLSemanticTokenType;
 };
+
+type SQLFoldingToken = {
+  kind: 'word' | 'openParen' | 'closeParen' | 'semicolon';
+  value: string;
+  lineNumber: number;
+};
+
+const SQL_STATEMENT_START_KEYWORDS = new Set([
+  'alter',
+  'analyze',
+  'begin',
+  'call',
+  'commit',
+  'copy',
+  'create',
+  'delete',
+  'do',
+  'drop',
+  'explain',
+  'grant',
+  'insert',
+  'merge',
+  'revoke',
+  'rollback',
+  'select',
+  'truncate',
+  'update',
+  'vacuum',
+  'values',
+  'with',
+]);
 
 export function isSQLKeywordDelimiter(value: string) {
   return /[\s(),;]/.test(value);
@@ -375,6 +406,181 @@ function tokenizeSQLForSemanticColors(value: string) {
   });
 
   return tokens;
+}
+
+function tokenizeSQLForFolding(value: string) {
+  const tokens: SQLFoldingToken[] = [];
+  let inBlockComment = false;
+  let inSingleQuotedString = false;
+  let inDoubleQuotedIdentifier = false;
+
+  value.split('\n').forEach((line, lineIndex) => {
+    let index = 0;
+    const lineNumber = lineIndex + 1;
+
+    while (index < line.length) {
+      const char = line[index];
+      const nextChar = line[index + 1];
+
+      if (inBlockComment) {
+        const blockCommentEnd = line.indexOf('*/', index);
+        if (blockCommentEnd < 0) {
+          break;
+        }
+        inBlockComment = false;
+        index = blockCommentEnd + 2;
+        continue;
+      }
+
+      if (inSingleQuotedString) {
+        if (char === "'" && nextChar === "'") {
+          index += 2;
+          continue;
+        }
+        if (char === "'") {
+          inSingleQuotedString = false;
+        }
+        index += 1;
+        continue;
+      }
+
+      if (inDoubleQuotedIdentifier) {
+        if (char === '"' && nextChar === '"') {
+          index += 2;
+          continue;
+        }
+        if (char === '"') {
+          inDoubleQuotedIdentifier = false;
+        }
+        index += 1;
+        continue;
+      }
+
+      if (char === '-' && nextChar === '-') {
+        break;
+      }
+
+      if (char === '/' && nextChar === '*') {
+        inBlockComment = true;
+        index += 2;
+        continue;
+      }
+
+      if (char === "'") {
+        inSingleQuotedString = true;
+        index += 1;
+        continue;
+      }
+
+      if (char === '"') {
+        inDoubleQuotedIdentifier = true;
+        index += 1;
+        continue;
+      }
+
+      if (isSQLIdentifierStart(char)) {
+        const start = index;
+        index += 1;
+        while (index < line.length && isSQLIdentifierPart(line[index])) {
+          index += 1;
+        }
+        tokens.push({ kind: 'word', value: line.slice(start, index).toLowerCase(), lineNumber });
+        continue;
+      }
+
+      if (char === '(') {
+        tokens.push({ kind: 'openParen', value: char, lineNumber });
+      } else if (char === ')') {
+        tokens.push({ kind: 'closeParen', value: char, lineNumber });
+      } else if (char === ';') {
+        tokens.push({ kind: 'semicolon', value: char, lineNumber });
+      }
+
+      index += 1;
+    }
+  });
+
+  return tokens;
+}
+
+function addSQLFoldingRange(
+  ranges: languages.FoldingRange[],
+  seenRanges: Set<string>,
+  start: number,
+  end: number,
+) {
+  if (end <= start) {
+    return;
+  }
+
+  const key = `${start}:${end}`;
+  if (seenRanges.has(key)) {
+    return;
+  }
+
+  seenRanges.add(key);
+  ranges.push({ start, end });
+}
+
+function previousWordToken(tokens: SQLFoldingToken[], index: number) {
+  for (let tokenIndex = index - 1; tokenIndex >= 0; tokenIndex -= 1) {
+    const token = tokens[tokenIndex];
+    if (token.kind === 'word') {
+      return token;
+    }
+    if (token.kind === 'semicolon' || token.kind === 'closeParen') {
+      return null;
+    }
+  }
+  return null;
+}
+
+export function buildSQLFoldingRanges(model: editor.ITextModel): languages.FoldingRange[] {
+  const tokens = tokenizeSQLForFolding(model.getValue());
+  const ranges: languages.FoldingRange[] = [];
+  const seenRanges = new Set<string>();
+  const parenStack: Array<{ startLine: number; inClause: boolean }> = [];
+  let statementStartLine: number | null = null;
+  let lastTokenLine = 1;
+
+  tokens.forEach((token, index) => {
+    lastTokenLine = token.lineNumber;
+
+    if (statementStartLine === null && token.kind === 'word' && SQL_STATEMENT_START_KEYWORDS.has(token.value)) {
+      statementStartLine = token.lineNumber;
+    }
+
+    if (token.kind === 'openParen') {
+      const previousWord = previousWordToken(tokens, index);
+      parenStack.push({
+        startLine: previousWord?.value === 'in' ? previousWord.lineNumber : token.lineNumber,
+        inClause: previousWord?.value === 'in',
+      });
+      return;
+    }
+
+    if (token.kind === 'closeParen') {
+      const openParen = parenStack.pop();
+      if (openParen?.inClause) {
+        addSQLFoldingRange(ranges, seenRanges, openParen.startLine, token.lineNumber);
+      }
+      return;
+    }
+
+    if (token.kind === 'semicolon') {
+      if (statementStartLine !== null) {
+        addSQLFoldingRange(ranges, seenRanges, statementStartLine, token.lineNumber);
+      }
+      statementStartLine = null;
+      parenStack.length = 0;
+    }
+  });
+
+  if (statementStartLine !== null) {
+    addSQLFoldingRange(ranges, seenRanges, statementStartLine, lastTokenLine);
+  }
+
+  return ranges.sort((left, right) => left.start - right.start || left.end - right.end);
 }
 
 function lastIdentifierBeforeTrailingDot(tokens: SQLParsedToken[]) {

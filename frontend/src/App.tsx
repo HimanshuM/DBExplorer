@@ -103,6 +103,7 @@ import {
   scriptStateFromTab,
 } from './app/scriptWorkspace';
 import {
+  buildSQLFoldingRanges,
   buildSQLIdentifierDecorations,
   getSQLCompletionContext,
   getSQLReferencedRelations,
@@ -223,6 +224,7 @@ function readStoredPaneSizes() {
 export default function App() {
   const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null);
   const sqlCompletionProviderRef = useRef<{ dispose: () => void } | null>(null);
+  const sqlFoldingProviderRef = useRef<{ dispose: () => void } | null>(null);
   const sqlColumnCompletionCacheRef = useRef<Map<string, SQLCompletionColumn[]>>(new Map());
   const sqlCompletionDataRef = useRef<SQLCompletionData>({
     profileID: '',
@@ -440,6 +442,8 @@ export default function App() {
   useEffect(() => () => {
     sqlCompletionProviderRef.current?.dispose();
     sqlCompletionProviderRef.current = null;
+    sqlFoldingProviderRef.current?.dispose();
+    sqlFoldingProviderRef.current = null;
   }, []);
 
   useEffect(() => {
@@ -1135,6 +1139,7 @@ export default function App() {
 
   const handleEditorBeforeMount: BeforeMount = (monaco) => {
     sqlCompletionProviderRef.current?.dispose();
+    sqlFoldingProviderRef.current?.dispose();
     sqlCompletionProviderRef.current = monaco.languages.registerCompletionItemProvider('sql', {
       triggerCharacters: ['.', ' '],
       provideCompletionItems: async (model, position) => {
@@ -1229,6 +1234,9 @@ export default function App() {
 
         return { suggestions: keywordSuggestions };
       },
+    });
+    sqlFoldingProviderRef.current = monaco.languages.registerFoldingRangeProvider('sql', {
+      provideFoldingRanges: (model) => buildSQLFoldingRanges(model),
     });
 
     monaco.editor.defineTheme('db-explorer-dark', {
@@ -2630,6 +2638,9 @@ export default function App() {
                   fontFamily: 'JetBrains Mono, Menlo, Consolas, monospace',
                   scrollBeyondLastLine: false,
                   automaticLayout: true,
+                  folding: true,
+                  foldingStrategy: 'auto',
+                  showFoldingControls: 'mouseover',
                   tabSize: 4,
                 }}
               />
