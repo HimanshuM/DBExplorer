@@ -1313,7 +1313,7 @@ export default function App() {
       id: 'db-explorer.format-selection-sql',
       label: 'Format SQL',
       precondition: 'editorHasSelection',
-      keybindings: [KeyMod.Shift | KeyMod.Alt | KeyCode.KeyF],
+      keybindings: [KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KeyI],
       contextMenuGroupId: '1_modification',
       contextMenuOrder: 1,
       run: (codeEditor) => {
@@ -1330,7 +1330,7 @@ export default function App() {
       id: 'db-explorer.format-script',
       label: 'Format Script',
       precondition: '!editorHasSelection',
-      keybindings: [KeyMod.Shift | KeyMod.Alt | KeyCode.KeyF],
+      keybindings: [KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KeyI],
       contextMenuGroupId: '1_modification',
       contextMenuOrder: 1,
       run: (codeEditor) => {
