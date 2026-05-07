@@ -5,6 +5,7 @@ import { type ProfileFormState } from './types';
 export const defaultProfileForm: ProfileFormState = {
   id: '',
   name: 'Local Postgres',
+  folder: '',
   host: 'localhost',
   port: '5432',
   user: 'postgres',
@@ -44,6 +45,14 @@ export function ConnectionForm({
         <input
           value={form.name}
           onChange={(event) => onChange('name', event.target.value)}
+          disabled={busy}
+        />
+      </label>
+      <label>
+        <span>Folder</span>
+        <input
+          value={form.folder}
+          onChange={(event) => onChange('folder', event.target.value)}
           disabled={busy}
         />
       </label>
@@ -137,6 +146,7 @@ export function buildProfile(form: ProfileFormState) {
   return domain.ConnProfile.createFrom({
     id,
     name: form.name.trim(),
+    folder: form.folder.trim(),
     kind: 'postgres',
     host: form.host.trim(),
     port,

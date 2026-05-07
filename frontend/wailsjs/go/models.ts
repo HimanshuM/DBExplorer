@@ -56,6 +56,7 @@ export namespace domain {
 	export class ConnProfile {
 	    id: string;
 	    name: string;
+	    folder?: string;
 	    kind: string;
 	    host: string;
 	    port: number;
@@ -72,6 +73,7 @@ export namespace domain {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
 	        this.name = source["name"];
+	        this.folder = source["folder"];
 	        this.kind = source["kind"];
 	        this.host = source["host"];
 	        this.port = source["port"];

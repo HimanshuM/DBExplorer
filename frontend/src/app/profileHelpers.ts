@@ -15,6 +15,7 @@ export function profileToForm(profile: domain.ConnProfile): ProfileFormState {
   return {
     id: profile.id,
     name: profile.name,
+    folder: profile.folder ?? '',
     host: profile.host,
     port: String(profile.port || ''),
     user: profile.user,

@@ -17,6 +17,8 @@ import { type ExplorerTreeNodeKind } from './types';
 
 export function iconForExplorerKind(kind: ExplorerTreeNodeKind): LucideIcon {
   switch (kind) {
+    case 'folder':
+      return Folder;
     case 'connection':
       return Plug;
     case 'database':
@@ -101,6 +103,7 @@ export function LayoutPaneIcon({
 function isExplorerKind(kind: string): kind is ExplorerTreeNodeKind {
   return [
     'connection',
+    'folder',
     'database',
     'schema',
     'group',

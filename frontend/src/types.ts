@@ -65,6 +65,7 @@ export type JobStatusItem = {
 };
 
 export type ExplorerTreeNodeKind =
+  | 'folder'
   | 'connection'
   | 'database'
   | 'schema'
@@ -101,6 +102,7 @@ export type ObjectInfoState = {
 export type ProfileFormState = {
   id: string;
   name: string;
+  folder: string;
   host: string;
   port: string;
   user: string;

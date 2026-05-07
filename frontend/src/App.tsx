@@ -62,6 +62,7 @@ import {
   collapseExplorerNodes,
   ExplorerTree,
   explorerNodeID,
+  findExplorerNode,
   groupExplorerObjects,
   isDataExplorerObject,
   isInspectableExplorerObject,
@@ -127,6 +128,69 @@ const PANE_SIZE_STORAGE_KEY = 'db-explorer:pane-sizes:v1';
 
 function clamp(value: number, minimum: number, maximum: number) {
   return Math.min(Math.max(value, minimum), maximum);
+}
+
+function buildConnectionExplorerNodes(
+  profiles: domain.ConnProfile[],
+  currentNodes: ExplorerTreeNode[],
+): ExplorerTreeNode[] {
+  const sortedProfiles = [...profiles].sort((left, right) => {
+    const leftFolder = (left.folder ?? '').trim();
+    const rightFolder = (right.folder ?? '').trim();
+    const folderCompare = leftFolder.localeCompare(rightFolder, undefined, { sensitivity: 'base' });
+    if (folderCompare !== 0) {
+      return folderCompare;
+    }
+    return (left.name || left.id).localeCompare(right.name || right.id, undefined, { sensitivity: 'base' });
+  });
+
+  const rootNodes: ExplorerTreeNode[] = [];
+  const folders = new Map<string, ExplorerTreeNode>();
+
+  for (const profile of sortedProfiles) {
+    const connectionID = explorerNodeID('profile', profile.id);
+    const existing = findExplorerNode(currentNodes, connectionID);
+    const connectionNode: ExplorerTreeNode = {
+      id: connectionID,
+      label: profile.name || profile.id,
+      detail: profile.database || profile.host,
+      kind: 'connection',
+      profileID: profile.id,
+      expanded: existing?.expanded ?? false,
+      loaded: existing?.loaded ?? false,
+      loading: existing?.loading ?? false,
+      error: existing?.error,
+      children: existing?.children ?? [],
+    };
+    const folderName = (profile.folder ?? '').trim();
+
+    if (!folderName) {
+      rootNodes.push(connectionNode);
+      continue;
+    }
+
+    let folder = folders.get(folderName);
+    if (!folder) {
+      const folderID = explorerNodeID('connection-folder', folderName);
+      const existingFolder = findExplorerNode(currentNodes, folderID);
+      folder = {
+        id: folderID,
+        label: folderName,
+        kind: 'folder',
+        profileID: '',
+        expanded: existingFolder?.expanded ?? true,
+        loaded: true,
+        loading: false,
+        children: [],
+      };
+      folders.set(folderName, folder);
+      rootNodes.push(folder);
+    }
+
+    folder.children.push(connectionNode);
+  }
+
+  return rootNodes;
 }
 
 function readStoredPaneSizes() {
@@ -826,21 +890,7 @@ export default function App() {
 
   useEffect(() => {
     setExplorerNodes((current) =>
-      profiles.map((profile) => {
-        const existing = current.find((node) => node.id === explorerNodeID('profile', profile.id));
-        return {
-          id: explorerNodeID('profile', profile.id),
-          label: profile.name || profile.id,
-          detail: profile.database || profile.host,
-          kind: 'connection',
-          profileID: profile.id,
-          expanded: existing?.expanded ?? false,
-          loaded: existing?.loaded ?? false,
-          loading: existing?.loading ?? false,
-          error: existing?.error,
-          children: existing?.children ?? [],
-        };
-      }),
+      buildConnectionExplorerNodes(profiles, current),
     );
   }, [profiles]);
 
@@ -1607,6 +1657,47 @@ export default function App() {
     }
   }
 
+  async function handleMoveProfileToFolder(profileID: string, folder: string) {
+    const profile = profiles.find((candidate) => candidate.id === profileID);
+    const nextFolder = folder.trim();
+    if (!profile || (profile.folder ?? '') === nextFolder) {
+      return;
+    }
+
+    setGlobalError('');
+
+    try {
+      await SaveProfile(domain.ConnProfile.createFrom({
+        ...profile,
+        folder: nextFolder,
+      }));
+      await refreshProfiles(profileID);
+      setConnectionMessage(`Moved "${profile.name || profile.id}" to ${nextFolder}`);
+    } catch (err) {
+      setGlobalError(formatError(err));
+    }
+  }
+
+  async function handleMoveProfileToRoot(profileID: string) {
+    const profile = profiles.find((candidate) => candidate.id === profileID);
+    if (!profile || !profile.folder) {
+      return;
+    }
+
+    setGlobalError('');
+
+    try {
+      await SaveProfile(domain.ConnProfile.createFrom({
+        ...profile,
+        folder: '',
+      }));
+      await refreshProfiles(profileID);
+      setConnectionMessage(`Moved "${profile.name || profile.id}" out of ${profile.folder}`);
+    } catch (err) {
+      setGlobalError(formatError(err));
+    }
+  }
+
   async function handleRun() {
     const profile = selectedProfile;
     const tab = activeTab;
@@ -1903,7 +1994,7 @@ export default function App() {
   }
 
   async function toggleExplorerNode(node: ExplorerTreeNode) {
-    if (node.kind === 'group') {
+    if (node.kind === 'folder' || node.kind === 'group') {
       updateExplorerNode(node.id, (current) => ({ ...current, expanded: !current.expanded }));
       return;
     }
@@ -2320,6 +2411,8 @@ export default function App() {
                   selectedProfileID={activeProfileID}
                   selectedNodeID={selectedExplorerNodeID}
                   onNodeClick={(node) => void handleExplorerNodeClick(node)}
+                  onMoveConnectionToFolder={(profileID, folder) => void handleMoveProfileToFolder(profileID, folder)}
+                  onMoveConnectionToRoot={(profileID) => void handleMoveProfileToRoot(profileID)}
                   renderNodeActions={(node) => {
                     if (node.kind !== 'connection') {
                       return null;

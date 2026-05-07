@@ -7,6 +7,7 @@ const ConnectionKindPostgres ConnectionKind = "postgres"
 type ConnProfile struct {
 	ID       ConnProfileID     `json:"id"`
 	Name     string            `json:"name"`
+	Folder   string            `json:"folder,omitempty"`
 	Kind     ConnectionKind    `json:"kind"`
 	Host     string            `json:"host"`
 	Port     int               `json:"port"`

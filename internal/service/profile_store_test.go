@@ -28,6 +28,7 @@ func TestFileProfileStoreSaveAndLoadProfiles(t *testing.T) {
 		{
 			ID:       "z_profile",
 			Name:     "Z",
+			Folder:   "Production",
 			Kind:     domain.ConnectionKindPostgres,
 			Host:     "localhost",
 			Port:     5432,
@@ -69,5 +70,8 @@ func TestFileProfileStoreSaveAndLoadProfiles(t *testing.T) {
 	}
 	if loaded["z_profile"].Options["password"] != "secret" {
 		t.Fatalf("expected password option to round trip, got %+v", loaded["z_profile"].Options)
+	}
+	if loaded["z_profile"].Folder != "Production" {
+		t.Fatalf("expected folder to round trip, got %q", loaded["z_profile"].Folder)
 	}
 }
