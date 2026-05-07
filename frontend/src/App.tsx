@@ -167,6 +167,8 @@ export default function App() {
   });
   const tabsRef = useRef<EditorTab[]>([]);
   const objectTabsRef = useRef<ObjectInfoTab[]>([]);
+  const activeTabIDRef = useRef('query_1');
+  const activeWorkspaceTabIDRef = useRef('query_1');
   const tabCounterRef = useRef(1);
   const toastCounterRef = useRef(0);
   const workspaceLoadedRef = useRef(false);
@@ -346,6 +348,14 @@ export default function App() {
   useEffect(() => {
     objectTabsRef.current = objectTabs;
   }, [objectTabs]);
+
+  useEffect(() => {
+    activeTabIDRef.current = activeTabID;
+  }, [activeTabID]);
+
+  useEffect(() => {
+    activeWorkspaceTabIDRef.current = activeWorkspaceTabID;
+  }, [activeWorkspaceTabID]);
 
   useEffect(() => {
     try {
@@ -543,6 +553,32 @@ export default function App() {
         setObjectQuickOpenQuery('');
         setObjectQuickOpenActiveIndex(0);
         setObjectQuickOpenInteractionMode('keyboard');
+        return;
+      }
+
+      if ((event.ctrlKey || event.metaKey) && event.key === 'Tab') {
+        event.preventDefault();
+        event.stopPropagation();
+        cycleWorkspaceTab(event.shiftKey ? -1 : 1);
+        return;
+      }
+
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 't') {
+        event.preventDefault();
+        event.stopPropagation();
+        addEditorTab();
+        return;
+      }
+
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'w') {
+        event.preventDefault();
+        event.stopPropagation();
+        const activeWorkspaceTabID = activeWorkspaceTabIDRef.current;
+        if (tabsRef.current.some((tab) => tab.id === activeWorkspaceTabID)) {
+          closeEditorTab(activeWorkspaceTabID);
+        } else if (objectTabsRef.current.some((tab) => tab.id === activeWorkspaceTabID)) {
+          closeObjectTab(activeWorkspaceTabID);
+        }
         return;
       }
 
@@ -1432,6 +1468,27 @@ export default function App() {
     setActiveWorkspaceTabID(nextTab.id);
   }
 
+  function cycleWorkspaceTab(direction: 1 | -1) {
+    const tabIDs = [
+      ...tabsRef.current.map((tab) => tab.id),
+      ...objectTabsRef.current.map((tab) => tab.id),
+    ];
+    if (tabIDs.length <= 1) {
+      return;
+    }
+
+    const activeIndex = tabIDs.indexOf(activeWorkspaceTabIDRef.current);
+    const nextIndex = activeIndex === -1
+      ? 0
+      : (activeIndex + direction + tabIDs.length) % tabIDs.length;
+    const nextTabID = tabIDs[nextIndex];
+
+    if (tabsRef.current.some((tab) => tab.id === nextTabID)) {
+      setActiveTabID(nextTabID);
+    }
+    setActiveWorkspaceTabID(nextTabID);
+  }
+
   function closeEditorTab(tabID: string) {
     const tab = tabsRef.current.find((candidate) => candidate.id === tabID);
     if (!tab || tab.running || tabsRef.current.length <= 1) {
@@ -1440,10 +1497,10 @@ export default function App() {
 
     const remainingTabs = tabsRef.current.filter((candidate) => candidate.id !== tabID);
     setTabs(remainingTabs);
-    if (activeTabID === tabID) {
+    if (activeTabIDRef.current === tabID) {
       setActiveTabID(remainingTabs[0]?.id ?? '');
     }
-    if (activeWorkspaceTabID === tabID) {
+    if (activeWorkspaceTabIDRef.current === tabID) {
       setActiveWorkspaceTabID(remainingTabs[0]?.id ?? objectTabsRef.current[0]?.id ?? '');
     }
   }
@@ -1451,8 +1508,8 @@ export default function App() {
   function closeObjectTab(tabID: string) {
     const remainingTabs = objectTabsRef.current.filter((candidate) => candidate.id !== tabID);
     setObjectTabs(remainingTabs);
-    if (activeWorkspaceTabID === tabID) {
-      setActiveWorkspaceTabID(activeTabID || remainingTabs[0]?.id || '');
+    if (activeWorkspaceTabIDRef.current === tabID) {
+      setActiveWorkspaceTabID(activeTabIDRef.current || remainingTabs[0]?.id || '');
     }
   }
 
