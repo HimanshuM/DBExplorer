@@ -1,4 +1,7 @@
-.PHONY: test test-integration test-race tests
+.PHONY: dev test test-integration test-race tests
+
+dev:
+	GOTOOLCHAIN=go1.26.2 wails dev
 
 test:
 	go test ./...

@@ -9,6 +9,7 @@
     "preview": "vite preview --host 127.0.0.1"
   },
   "dependencies": {
+    "@agility-workbench/react-grid": "^1.0.0",
     "@monaco-editor/react": "^4.7.0",
     "lucide-react": "^1.14.0",
     "monaco-editor": "^0.52.2",
