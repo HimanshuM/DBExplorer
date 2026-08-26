@@ -26,6 +26,7 @@ import type { editor, IRange, languages } from 'monaco-editor';
 import { KeyCode, KeyMod } from 'monaco-editor';
 import {
   CancelJob,
+  DisposeJob,
   GetJob,
   GetResultSchema,
   GetRows,
@@ -84,6 +85,7 @@ import {
   type JobResultSetEvent,
   type ObjectInfoTab,
   type ProfileFormState,
+  type QueryResultTab,
 } from './types';
 import { appIconURL } from './app/appAssets';
 import { type DatabaseOptionsState, type ToastState, uniqueStrings } from './app/appState';
@@ -237,6 +239,8 @@ export default function App() {
   const activeTabIDRef = useRef('query_1');
   const activeWorkspaceTabIDRef = useRef('query_1');
   const tabCounterRef = useRef(1);
+  const resultTabCounterRef = useRef(0);
+  const resultTabNumberByEditorRef = useRef<Map<string, number>>(new Map());
   const toastCounterRef = useRef(0);
   const workspaceLoadedRef = useRef(false);
   const workspaceSaveTimeoutRef = useRef<number | null>(null);
@@ -288,6 +292,7 @@ export default function App() {
   const [objectQuickOpenInteractionMode, setObjectQuickOpenInteractionMode] = useState<'keyboard' | 'mouse'>('keyboard');
   const [savingScriptID, setSavingScriptID] = useState('');
   const handleRunRef = useRef<() => void>(() => { });
+  const handleRunInNewResultTabRef = useRef<() => void>(() => { });
 
   const activeTab = useMemo(
     () => tabs.find((tab) => tab.id === activeTabID) ?? tabs[0],
@@ -392,9 +397,18 @@ export default function App() {
     } as CSSProperties)
     : undefined;
 
-  const visibleResult = activeTab?.result ?? { schema: null, rows: null };
-  const visibleError = activeTab?.error || activeTab?.job?.error?.message || globalError;
-  const status = activeTab?.job?.status ?? 'idle';
+  const activeResultTab = useMemo(
+    () => activeTab?.resultTabs.find((resultTab) => resultTab.id === activeTab.activeResultTabID) ?? null,
+    [activeTab],
+  );
+  const visibleResult = activeResultTab?.result ?? activeTab?.result ?? { schema: null, rows: null };
+  const visibleJob = activeResultTab?.job ?? activeTab?.job ?? null;
+  const visibleError = activeResultTab
+    ? activeResultTab.error || activeResultTab.job?.error?.message || globalError
+    : activeTab?.error || activeTab?.job?.error?.message || globalError;
+  const visibleRunning = activeResultTab?.running ?? activeTab?.running ?? false;
+  const visibleActiveJobID = activeResultTab?.activeJobID ?? activeTab?.activeJobID ?? '';
+  const status = visibleJob?.status ?? 'idle';
   const jobStatusItems = useMemo(
     () => collectJobStatusItems(tabs, objectTabs, profiles, activeWorkspaceTabID),
     [tabs, objectTabs, profiles, activeWorkspaceTabID],
@@ -927,6 +941,18 @@ export default function App() {
       return tabsRef.current.find((tab) => tab.activeJobID === jobID || tab.job?.jobId === jobID);
     }
 
+    function findResultTabByJobID(jobID: string) {
+      for (const tab of tabsRef.current) {
+        const resultTab = tab.resultTabs.find(
+          (candidate) => candidate.activeJobID === jobID || candidate.job?.jobId === jobID,
+        );
+        if (resultTab) {
+          return { tab, resultTab };
+        }
+      }
+      return null;
+    }
+
     function findObjectTabByJobID(jobID: string) {
       return objectTabsRef.current.find(
         (tab) => tab.dataActiveJobID === jobID || tab.dataJob?.jobId === jobID,
@@ -941,6 +967,16 @@ export default function App() {
           job: summary,
           running: !terminalStatuses.has(summary.status),
           activeJobID: terminalStatuses.has(summary.status) ? '' : tab.activeJobID,
+        });
+        return;
+      }
+
+      const resultMatch = findResultTabByJobID(summary.jobId);
+      if (resultMatch) {
+        updateQueryResultTab(resultMatch.tab.id, resultMatch.resultTab.id, {
+          job: summary,
+          running: !terminalStatuses.has(summary.status),
+          activeJobID: terminalStatuses.has(summary.status) ? '' : resultMatch.resultTab.activeJobID,
         });
         return;
       }
@@ -971,6 +1007,25 @@ export default function App() {
         return;
       }
 
+      const resultMatch = findResultTabByJobID(summary.jobId);
+      if (resultMatch) {
+        updateQueryResultTab(resultMatch.tab.id, resultMatch.resultTab.id, {
+          job: summary,
+          running: false,
+          activeJobID: '',
+        });
+
+        if (summary.status === 'succeeded') {
+          void loadFirstResultTabPage(
+            summary.profileId || resultMatch.resultTab.profileID || selectedProfileIDRef.current,
+            summary,
+            resultMatch.tab.id,
+            resultMatch.resultTab.id,
+          );
+        }
+        return;
+      }
+
       const objectTab = findObjectTabByJobID(summary.jobId);
       if (objectTab) {
         updateObjectTab(objectTab.id, {
@@ -992,6 +1047,19 @@ export default function App() {
       const tab = findTabByJobID(summary.jobId);
       if (tab) {
         updateTab(tab.id, (current) => ({
+          ...current,
+          job: summary,
+          result: {
+            ...current.result,
+            schema: domain.ResultSchema.createFrom(event.schema),
+          },
+        }));
+        return;
+      }
+
+      const resultMatch = findResultTabByJobID(summary.jobId);
+      if (resultMatch) {
+        updateQueryResultTab(resultMatch.tab.id, resultMatch.resultTab.id, (current) => ({
           ...current,
           job: summary,
           result: {
@@ -1297,6 +1365,9 @@ export default function App() {
     mountedEditor.addCommand(KeyMod.CtrlCmd | KeyCode.Enter, () => {
       handleRunRef.current();
     });
+    mountedEditor.addCommand(KeyMod.CtrlCmd | KeyCode.Backslash, () => {
+      handleRunInNewResultTabRef.current();
+    });
     const formatEditorRange = (
       codeEditor: editor.ICodeEditor,
       range: IRange,
@@ -1400,6 +1471,22 @@ export default function App() {
         return typeof patch === 'function' ? patch(tab) : { ...tab, ...patch };
       }),
     );
+  }
+
+  function updateQueryResultTab(
+    tabID: string,
+    resultTabID: string,
+    patch: Partial<QueryResultTab> | ((resultTab: QueryResultTab) => QueryResultTab),
+  ) {
+    updateTab(tabID, (tab) => ({
+      ...tab,
+      resultTabs: tab.resultTabs.map((resultTab) => {
+        if (resultTab.id !== resultTabID) {
+          return resultTab;
+        }
+        return typeof patch === 'function' ? patch(resultTab) : { ...resultTab, ...patch };
+      }),
+    }));
   }
 
   function showErrorToast(message: string) {
@@ -1624,7 +1711,7 @@ export default function App() {
 
   function closeEditorTab(tabID: string) {
     const tab = tabsRef.current.find((candidate) => candidate.id === tabID);
-    if (!tab || tab.running || tabsRef.current.length <= 1) {
+    if (!tab || tab.running || tab.resultTabs.some((resultTab) => resultTab.running) || tabsRef.current.length <= 1) {
       return;
     }
 
@@ -1635,6 +1722,36 @@ export default function App() {
     }
     if (activeWorkspaceTabIDRef.current === tabID) {
       setActiveWorkspaceTabID(remainingTabs[0]?.id ?? objectTabsRef.current[0]?.id ?? '');
+    }
+  }
+
+  function closeResultTab(tabID: string, resultTabID: string) {
+    const tab = tabsRef.current.find((candidate) => candidate.id === tabID);
+    const resultTabIndex = tab?.resultTabs.findIndex((candidate) => candidate.id === resultTabID) ?? -1;
+    const resultTab = resultTabIndex >= 0 ? tab?.resultTabs[resultTabIndex] : undefined;
+    if (!tab || !resultTab || resultTab.running) {
+      return;
+    }
+
+    updateTab(tabID, (current) => {
+      const remainingResultTabs = current.resultTabs.filter((candidate) => candidate.id !== resultTabID);
+      const previousResultTab = current.resultTabs[resultTabIndex - 1];
+      return {
+        ...current,
+        resultTabs: remainingResultTabs,
+        activeResultTabID: current.activeResultTabID === resultTabID
+          ? previousResultTab?.id ?? ''
+          : current.activeResultTabID,
+      };
+    });
+
+    if (resultTab.job && terminalStatuses.has(resultTab.job.status)) {
+      const profileID = resultTab.job.profileId || resultTab.profileID;
+      if (profileID) {
+        void DisposeJob(profileID, resultTab.job.jobId).catch((err) => {
+          showErrorToast(`Could not release ${resultTab.title}: ${formatError(err)}`);
+        });
+      }
     }
   }
 
@@ -1781,21 +1898,27 @@ export default function App() {
     }
   }
 
-  async function handleRun() {
+  async function executeQuery(openInNewResultTab: boolean) {
     const profile = selectedProfile;
     const tab = activeTab;
     const target = getSQLExecutionTarget(editorRef.current, tab?.sql ?? '');
 
     if (!profile) {
       if (tab) {
-        updateTab(tab.id, { error: 'Select a connection profile before running a query.' });
+        updateTab(tab.id, {
+          activeResultTabID: '',
+          error: 'Select a connection profile before running a query.',
+        });
       }
       return;
     }
 
     if (!target.sql.trim()) {
       if (tab) {
-        updateTab(tab.id, { error: 'Enter a SQL statement before running.' });
+        updateTab(tab.id, {
+          activeResultTabID: '',
+          error: 'Enter a SQL statement before running.',
+        });
       }
       return;
     }
@@ -1807,16 +1930,48 @@ export default function App() {
     const database = tab.database || profile.database;
 
     if (!database) {
-      updateTab(tab.id, { error: 'Select a database before running a query.' });
+      updateTab(tab.id, {
+        activeResultTabID: '',
+        error: 'Select a database before running a query.',
+      });
       return;
     }
 
-    updateTab(tab.id, {
-      error: '',
-      result: { schema: null, rows: null },
-      job: null,
-      running: true,
-    });
+    let resultTabID = '';
+    if (openInNewResultTab) {
+      resultTabCounterRef.current += 1;
+      resultTabID = `query_result_${resultTabCounterRef.current}`;
+      const previousResultNumber = resultTabNumberByEditorRef.current.get(tab.id)
+        ?? tab.resultTabs.length + 1;
+      const resultNumber = previousResultNumber + 1;
+      resultTabNumberByEditorRef.current.set(tab.id, resultNumber);
+      const nextResultTab: QueryResultTab = {
+        id: resultTabID,
+        title: `Result ${resultNumber}`,
+        profileID: profile.id,
+        database,
+        sql: target.sql,
+        job: null,
+        activeJobID: '',
+        result: { schema: null, rows: null },
+        running: true,
+        error: '',
+      };
+      updateTab(tab.id, (current) => ({
+        ...current,
+        resultTabs: [...current.resultTabs, nextResultTab],
+        activeResultTabID: resultTabID,
+      }));
+    } else {
+      updateTab(tab.id, {
+        activeResultTabID: '',
+        error: '',
+        result: { schema: null, rows: null },
+        job: null,
+        running: true,
+      });
+    }
+    setResultsPaneOpen(true);
 
     try {
       const response = await RunQuery(domain.RunQueryRequest.createFrom({
@@ -1835,24 +1990,47 @@ export default function App() {
         readOnly: true,
       }));
 
-      updateTab(tab.id, {
-        activeJobID: response.jobId,
-        job: domain.JobSummary.createFrom({
-          jobId: response.jobId,
-          profileId: profile.id,
-          database,
-          status: 'queued',
-          startedAt: 0,
-          endedAt: 0,
-          resultSets: [],
-        }),
+      const queuedJob = domain.JobSummary.createFrom({
+        jobId: response.jobId,
+        profileId: profile.id,
+        database,
+        status: 'queued',
+        startedAt: 0,
+        endedAt: 0,
+        resultSets: [],
       });
+      if (resultTabID) {
+        updateQueryResultTab(tab.id, resultTabID, {
+          activeJobID: response.jobId,
+          job: queuedJob,
+        });
+      } else {
+        updateTab(tab.id, {
+          activeJobID: response.jobId,
+          job: queuedJob,
+        });
+      }
     } catch (err) {
-      updateTab(tab.id, {
-        running: false,
-        error: formatError(err),
-      });
+      if (resultTabID) {
+        updateQueryResultTab(tab.id, resultTabID, {
+          running: false,
+          error: formatError(err),
+        });
+      } else {
+        updateTab(tab.id, {
+          running: false,
+          error: formatError(err),
+        });
+      }
     }
+  }
+
+  async function handleRun() {
+    await executeQuery(false);
+  }
+
+  async function handleRunInNewResultTab() {
+    await executeQuery(true);
   }
 
   handleRunRef.current = () => {
@@ -1861,17 +2039,29 @@ export default function App() {
     }
   };
 
+  handleRunInNewResultTabRef.current = () => {
+    void handleRunInNewResultTab();
+  };
+
   async function handleCancel() {
     const tab = activeTab;
-    const cancelProfileID = tab?.job?.profileId || tab?.profileID || activeProfileID;
-    if (!cancelProfileID || !tab?.activeJobID) {
+    const cancelProfileID = activeResultTab?.job?.profileId
+      || activeResultTab?.profileID
+      || tab?.job?.profileId
+      || tab?.profileID
+      || activeProfileID;
+    if (!cancelProfileID || !tab || !visibleActiveJobID) {
       return;
     }
 
     try {
-      await CancelJob(cancelProfileID, tab.activeJobID);
+      await CancelJob(cancelProfileID, visibleActiveJobID);
     } catch (err) {
-      updateTab(tab.id, { error: formatError(err) });
+      if (activeResultTab) {
+        updateQueryResultTab(tab.id, activeResultTab.id, { error: formatError(err) });
+      } else {
+        updateTab(tab.id, { error: formatError(err) });
+      }
     }
   }
 
@@ -2190,6 +2380,34 @@ export default function App() {
     }
   }
 
+  async function loadFirstResultTabPage(
+    profileID: string,
+    completedJob: domain.JobSummary,
+    tabID: string,
+    resultTabID: string,
+  ) {
+    const resultSetID = completedJob.resultSets[0]?.resultSetId || 'rs_1';
+
+    try {
+      const [schema, rows] = await Promise.all([
+        GetResultSchema(profileID, domain.GetResultSchemaRequest.createFrom({
+          jobId: completedJob.jobId,
+          resultSetId: resultSetID,
+        })),
+        GetRows(profileID, domain.GetRowsRequest.createFrom({
+          jobId: completedJob.jobId,
+          resultSetId: resultSetID,
+          start: 0,
+          count: RESULT_PREVIEW_ROW_LIMIT,
+        })),
+      ]);
+
+      updateQueryResultTab(tabID, resultTabID, { result: { schema, rows } });
+    } catch (err) {
+      updateQueryResultTab(tabID, resultTabID, { error: formatError(err) });
+    }
+  }
+
   async function loadFirstObjectDataPage(
     profileID: string,
     completedJob: domain.JobSummary,
@@ -2218,7 +2436,10 @@ export default function App() {
   }
 
   useEffect(() => {
-    if (!tabs.some((tab) => tab.activeJobID) && !objectTabs.some((tab) => tab.dataActiveJobID)) {
+    const hasRunningQuery = tabs.some(
+      (tab) => tab.activeJobID || tab.resultTabs.some((resultTab) => resultTab.activeJobID),
+    );
+    if (!hasRunningQuery && !objectTabs.some((tab) => tab.dataActiveJobID)) {
       return;
     }
 
@@ -2251,6 +2472,48 @@ export default function App() {
           } catch (err) {
             if (!canceled) {
               updateTab(tab.id, {
+                running: false,
+                activeJobID: '',
+                error: formatError(err),
+              });
+            }
+          }
+        }),
+      );
+
+      const runningResultTabs = tabsRef.current.flatMap((tab) =>
+        tab.resultTabs
+          .filter((resultTab) => resultTab.activeJobID)
+          .map((resultTab) => ({ tab, resultTab })),
+      );
+      await Promise.all(
+        runningResultTabs.map(async ({ tab, resultTab }) => {
+          try {
+            const nextJob = await GetJob(
+              resultTab.job?.profileId || resultTab.profileID || selectedProfileIDRef.current,
+              resultTab.activeJobID,
+            );
+            if (canceled) {
+              return;
+            }
+
+            if (terminalStatuses.has(nextJob.status)) {
+              updateQueryResultTab(tab.id, resultTab.id, {
+                job: nextJob,
+                running: false,
+                activeJobID: '',
+              });
+
+              if (nextJob.status === 'succeeded') {
+                await loadFirstResultTabPage(nextJob.profileId, nextJob, tab.id, resultTab.id);
+              }
+              return;
+            }
+
+            updateQueryResultTab(tab.id, resultTab.id, { job: nextJob, running: true });
+          } catch (err) {
+            if (!canceled) {
+              updateQueryResultTab(tab.id, resultTab.id, {
                 running: false,
                 activeJobID: '',
                 error: formatError(err),
@@ -2328,7 +2591,7 @@ export default function App() {
               >
                 <span className="tab-icon"><FileCode2 size={15} strokeWidth={1.8} /></span>
                 <span>{tab.title}{tab.sql !== tab.savedSQL ? ' *' : ''}</span>
-                {tab.running && <span className="tab-dot" />}
+                {(tab.running || tab.resultTabs.some((resultTab) => resultTab.running)) && <span className="tab-dot" />}
                 {tabs.length > 1 && (
                   <span
                     role="button"
@@ -2570,7 +2833,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={handleCancel}
-                disabled={!activeWorkspaceIsQuery || !activeTab?.running || !activeTab.activeJobID}
+                disabled={!activeWorkspaceIsQuery || !visibleRunning || !visibleActiveJobID}
               >
                 <Square size={14} strokeWidth={2} />
                 <span>Cancel</span>
@@ -2665,9 +2928,60 @@ export default function App() {
 
           {resultsPaneOpen && (
             <section className="results-region">
-              <header className="pane-header">
-                <span>{visibleResult.rows ? resultLabel(visibleResult.rows, activeTab?.job) : 'Results'}</span>
-                <span className={`status-pill ${status}`}>{status}</span>
+              <header className="results-header">
+                <div className="result-tab-strip" role="tablist" aria-label="Query results">
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={!activeResultTab}
+                    className={!activeResultTab ? 'result-tab active' : 'result-tab'}
+                    onClick={() => activeTab && updateTab(activeTab.id, { activeResultTabID: '' })}
+                  >
+                    <span>Result 1</span>
+                    {activeTab?.running && <span className="tab-dot" />}
+                  </button>
+                  {activeTab?.resultTabs.map((resultTab) => (
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={resultTab.id === activeResultTab?.id}
+                      key={resultTab.id}
+                      title={resultTab.sql}
+                      className={resultTab.id === activeResultTab?.id ? 'result-tab active' : 'result-tab'}
+                      onClick={() => updateTab(activeTab.id, { activeResultTabID: resultTab.id })}
+                    >
+                      <span>{resultTab.title}</span>
+                      {resultTab.running && <span className="tab-dot" />}
+                      {!resultTab.running && (
+                        <span
+                          role="button"
+                          tabIndex={0}
+                          aria-label={`Close ${resultTab.title}`}
+                          className="tab-close"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            closeResultTab(activeTab.id, resultTab.id);
+                          }}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter' || event.key === ' ') {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              closeResultTab(activeTab.id, resultTab.id);
+                            }
+                          }}
+                        >
+                          <X size={13} strokeWidth={2} />
+                        </span>
+                      )}
+                    </button>
+                  ))}
+                </div>
+                <div className="result-summary">
+                  <span className="result-label">
+                    {visibleResult.rows ? resultLabel(visibleResult.rows, visibleJob) : 'Results'}
+                  </span>
+                  <span className={`status-pill ${status}`}>{status}</span>
+                </div>
               </header>
               {visibleError ? (
                 <div className="message error">{visibleError}</div>
@@ -2675,7 +2989,7 @@ export default function App() {
                 <ResultTable schema={visibleResult.schema} rows={visibleResult.rows} />
               ) : (
                 <div className="result-placeholder">
-                  {activeTab?.running ? 'Waiting for query results' : 'Result grid mount point'}
+                  {visibleRunning ? 'Waiting for query results' : 'Result grid mount point'}
                 </div>
               )}
             </section>

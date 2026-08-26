@@ -5,6 +5,19 @@ export type ResultState = {
   rows: domain.GetRowsResponse | null;
 };
 
+export type QueryResultTab = {
+  id: string;
+  title: string;
+  profileID: string;
+  database: string;
+  sql: string;
+  job: domain.JobSummary | null;
+  activeJobID: string;
+  result: ResultState;
+  running: boolean;
+  error: string;
+};
+
 export type SQLExecutionTarget = {
   sql: string;
   mode: 'selection' | 'statement';
@@ -29,6 +42,8 @@ export type EditorTab = {
   job: domain.JobSummary | null;
   activeJobID: string;
   result: ResultState;
+  resultTabs: QueryResultTab[];
+  activeResultTabID: string;
   running: boolean;
   error: string;
 };

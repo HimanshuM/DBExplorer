@@ -222,6 +222,77 @@ button svg {
   padding: 0;
 }
 
+.results-header {
+  display: flex;
+  align-items: stretch;
+  justify-content: space-between;
+  height: 42px;
+  min-width: 0;
+  border-bottom: 1px solid #272d37;
+  background: #151a21;
+}
+
+.result-tab-strip {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.result-tab {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  height: 42px;
+  min-width: 96px;
+  max-width: 180px;
+  flex: 0 0 auto;
+  padding: 0 12px;
+  border-color: transparent #272d37 transparent transparent;
+  border-radius: 0;
+  color: #9ba6b8;
+  background: transparent;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.result-tab.active {
+  color: #d7dde8;
+  background: #202b43;
+  box-shadow: inset 0 -2px #5e7ce2;
+}
+
+.result-tab > span:not(.tab-close):not(.tab-dot) {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.result-summary {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  min-width: 0;
+  flex: 0 1 auto;
+  gap: 10px;
+  padding: 0 12px;
+  background: #151a21;
+}
+
+.result-label {
+  min-width: 0;
+  max-width: 260px;
+  overflow: hidden;
+  color: #c7d0df;
+  font-size: 12px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .workspace {
   display: grid;
   grid-template-rows: 42px minmax(220px, 1fr) 6px var(--results-pane-height, 280px);

@@ -16,6 +16,8 @@ export function editorTabFromScript(script: domain.ScriptTabState, fallbackIndex
     job: null,
     activeJobID: '',
     result: { schema: null, rows: null },
+    resultTabs: [],
+    activeResultTabID: '',
     running: false,
     error: '',
   };

@@ -88,24 +88,47 @@ export function collectJobStatusItems(
 ): JobStatusItem[] {
   const profileNames = new Map(profiles.map((profile) => [profile.id, profile.name || profile.id]));
   const queryJobs = tabs.flatMap((tab) => {
-    const job = tab.job;
-    if (!job) {
-      return [];
+    const jobs: JobStatusItem[] = [];
+    if (tab.job) {
+      const job = tab.job;
+      jobs.push({
+        id: `query:${job.jobId}`,
+        label: tab.title,
+        status: job.status,
+        database: job.database,
+        profileID: job.profileId || tab.profileID,
+        profileName: profileNames.get(job.profileId || tab.profileID),
+        jobID: job.jobId,
+        startedAt: job.startedAt,
+        endedAt: job.endedAt,
+        error: job.error?.message,
+        resultSetCount: job.resultSets?.length ?? 0,
+        active: tab.id === activeWorkspaceTabID && !tab.activeResultTabID,
+      });
     }
-    return [{
-      id: `query:${job.jobId}`,
-      label: tab.title,
-      status: job.status,
-      database: job.database,
-      profileID: job.profileId || tab.profileID,
-      profileName: profileNames.get(job.profileId || tab.profileID),
-      jobID: job.jobId,
-      startedAt: job.startedAt,
-      endedAt: job.endedAt,
-      error: job.error?.message,
-      resultSetCount: job.resultSets?.length ?? 0,
-      active: tab.id === activeWorkspaceTabID,
-    }];
+
+    tab.resultTabs.forEach((resultTab) => {
+      const job = resultTab.job;
+      if (!job) {
+        return;
+      }
+      jobs.push({
+        id: `query-result:${job.jobId}`,
+        label: `${tab.title} / ${resultTab.title}`,
+        status: job.status,
+        database: job.database || resultTab.database,
+        profileID: job.profileId || resultTab.profileID || tab.profileID,
+        profileName: profileNames.get(job.profileId || resultTab.profileID || tab.profileID),
+        jobID: job.jobId,
+        startedAt: job.startedAt,
+        endedAt: job.endedAt,
+        error: job.error?.message,
+        resultSetCount: job.resultSets?.length ?? 0,
+        active: tab.id === activeWorkspaceTabID && tab.activeResultTabID === resultTab.id,
+      });
+    });
+
+    return jobs;
   });
 
   const dataJobs = objectTabs.flatMap((tab) => {

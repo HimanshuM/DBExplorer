@@ -21,6 +21,8 @@ export function createEditorTab(index: number, profileID = '', database = ''): E
     job: null,
     activeJobID: '',
     result: { schema: null, rows: null },
+    resultTabs: [],
+    activeResultTabID: '',
     running: false,
     error: '',
   };
